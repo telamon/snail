@@ -1,0 +1,10 @@
+menu "Example Configuration"
+    choice
+        prompt "Publish Type"
+        default EXAMPLE_NAN_PUBLISH_UNSOLICITED
+        config EXAMPLE_NAN_PUBLISH_UNSOLICITED
+            bool "UNSOLICITED"
+        config EXAMPLE_NAN_PUBLISH_SOLICITED
+            bool "SOLICITED"
+    endchoice
+endmenu
