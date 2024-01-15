@@ -5,9 +5,9 @@
 /*
  * nanr.c
  * Neighbour Aware Network Relay
- * (Project: Slow Notes Around Immediate Location)
  */
 #include <string.h>
+#include "esp_wifi_types.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -22,6 +22,7 @@
 #define NAN_SERVICE "snail"
 #define NAN_FILTER ""
 #define NAN_MSG "Welcome"
+const char *tag = NAN_SERVICE;
 
 static EventGroupHandle_t nan_event_group;
 
@@ -47,7 +48,7 @@ static void nan_ndp_indication_event_handler(
 ) {
   if (event_data == NULL) return;
   wifi_event_ndp_indication_t *evt = (wifi_event_ndp_indication_t *)event_data;
-
+  ESP_LOGI(tag, "recv: ndp_indication_ev{ id: %i, peer: "MACSTR" }", evt->ndp_id, MAC2STR(evt->peer_nmi));
   wifi_nan_datapath_resp_t ndp_resp = {0};
   ndp_resp.accept = true; /* Accept incoming datapath request */
   ndp_resp.ndp_id = evt->ndp_id;
@@ -56,7 +57,38 @@ static void nan_ndp_indication_event_handler(
   esp_wifi_nan_datapath_resp(&ndp_resp);
 }
 
-void wifi_nan_publish(void) {
+uint8_t wifi_nan_subscribe (void) {
+  wifi_nan_subscribe_cfg_t config = {
+    .service_name = "snailrx",
+    .type = NAN_SUBSCRIBE_PASSIVE,
+    .single_match_event = true,
+    .matching_filter = NAN_FILTER,
+  };
+  uint8_t sub_id = esp_wifi_nan_subscribe_service(&config);
+  if (sub_id == 0) ESP_LOGE(tag, "Subscribe Failed, %i", sub_id);
+  else ESP_LOGI(tag, "Subscribed Succeeded %i", sub_id);
+  return sub_id;
+}
+
+void loop_events (uint8_t pub_id) {
+  ESP_LOGI(tag, "Entering Loop");
+  while (1) {
+    EventBits_t bits = xEventGroupWaitBits(nan_event_group, NAN_RECEIVE, pdFALSE, pdFALSE, portMAX_DELAY);
+    if (bits & NAN_RECEIVE) {
+      xEventGroupClearBits(nan_event_group, NAN_RECEIVE);
+      wifi_nan_followup_params_t fup = {0};
+      fup.inst_id = pub_id,
+        fup.peer_inst_id = g_peer_inst_id,
+        strlcpy(fup.svc_info, NAN_MSG, ESP_WIFI_MAX_SVC_INFO_LEN);
+
+      /* Reply to the message from a subscriber */
+      esp_wifi_nan_send_message(&fup);
+    }
+    vTaskDelay(10);
+  }
+}
+
+uint8_t wifi_nan_publish(void) {
   nan_event_group = xEventGroupCreate();
   esp_event_handler_instance_t instance_any_id;
   ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
@@ -84,7 +116,6 @@ void wifi_nan_publish(void) {
         &instance_any_id));
 
   /* Publish a service */
-  uint8_t pub_id;
   wifi_nan_publish_cfg_t publish_cfg = {
     .service_name = NAN_SERVICE,
 #if CONFIG_EXAMPLE_NAN_PUBLISH_UNSOLICITED
@@ -95,24 +126,10 @@ void wifi_nan_publish(void) {
     .matching_filter = NAN_FILTER,
     .single_replied_event = 1,
   };
-
-  pub_id = esp_wifi_nan_publish_service(&publish_cfg, ndp_require_consent);
-  if (pub_id == 0) return;
-
-  while (1) {
-    EventBits_t bits = xEventGroupWaitBits(nan_event_group, NAN_RECEIVE, pdFALSE, pdFALSE, portMAX_DELAY);
-    if (bits & NAN_RECEIVE) {
-      xEventGroupClearBits(nan_event_group, NAN_RECEIVE);
-      wifi_nan_followup_params_t fup = {0};
-      fup.inst_id = pub_id,
-        fup.peer_inst_id = g_peer_inst_id,
-        strlcpy(fup.svc_info, NAN_MSG, ESP_WIFI_MAX_SVC_INFO_LEN);
-
-      /* Reply to the message from a subscriber */
-      esp_wifi_nan_send_message(&fup);
-    }
-    vTaskDelay(10);
-  }
+  uint8_t pub_id = esp_wifi_nan_publish_service(&publish_cfg, ndp_require_consent);
+  if (pub_id == 0) ESP_LOGE(tag, "Publish Failed %i", pub_id);
+  else ESP_LOGI(tag, "Published Suceeded %i", pub_id);
+  return pub_id;
 }
 
 void initialise_wifi(void) {
@@ -133,6 +150,8 @@ void app_main(void) {
   ESP_ERROR_CHECK(ret);
 
   initialise_wifi();
-
-  wifi_nan_publish();
+  ESP_LOGI(tag, "NAN Initialized");
+  uint8_t pub_id = wifi_nan_publish();
+  wifi_nan_subscribe();
+  loop_events(pub_id);
 }
