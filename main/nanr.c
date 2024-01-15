@@ -21,7 +21,7 @@
 
 #define NAN_SERVICE "snail"
 #define NAN_FILTER ""
-#define NAN_MSG "Welcome"
+#define NAN_MSG "snail0"
 const char *tag = NAN_SERVICE;
 
 static EventGroupHandle_t nan_event_group;
@@ -40,6 +40,9 @@ static void nan_receive_event_handler(
   xEventGroupSetBits(nan_event_group, NAN_RECEIVE);
 }
 
+/**
+ * This handler accepts datapath requests
+ */
 static void nan_ndp_indication_event_handler(
   void *arg,
   esp_event_base_t event_base,
@@ -57,7 +60,24 @@ static void nan_ndp_indication_event_handler(
   esp_wifi_nan_datapath_resp(&ndp_resp);
 }
 
-uint8_t wifi_nan_subscribe (void) {
+void loop_events (uint8_t pub_id) {
+  ESP_LOGI(tag, "Entering Loop");
+  while (1) {
+    EventBits_t bits = xEventGroupWaitBits(nan_event_group, NAN_RECEIVE, pdFALSE, pdFALSE, portMAX_DELAY);
+    if (bits & NAN_RECEIVE) {
+      xEventGroupClearBits(nan_event_group, NAN_RECEIVE);
+      wifi_nan_followup_params_t fup = {0};
+      fup.inst_id = pub_id,
+        fup.peer_inst_id = g_peer_inst_id,
+        strlcpy(fup.svc_info, NAN_MSG, ESP_WIFI_MAX_SVC_INFO_LEN);
+      /* Reply to the message from a subscriber */
+      esp_wifi_nan_send_message(&fup);
+    }
+    vTaskDelay(10);
+  }
+}
+
+uint8_t nan_subscribe (void) {
   wifi_nan_subscribe_cfg_t config = {
     .service_name = "snailrx",
     .type = NAN_SUBSCRIBE_PASSIVE,
@@ -70,25 +90,7 @@ uint8_t wifi_nan_subscribe (void) {
   return sub_id;
 }
 
-void loop_events (uint8_t pub_id) {
-  ESP_LOGI(tag, "Entering Loop");
-  while (1) {
-    EventBits_t bits = xEventGroupWaitBits(nan_event_group, NAN_RECEIVE, pdFALSE, pdFALSE, portMAX_DELAY);
-    if (bits & NAN_RECEIVE) {
-      xEventGroupClearBits(nan_event_group, NAN_RECEIVE);
-      wifi_nan_followup_params_t fup = {0};
-      fup.inst_id = pub_id,
-        fup.peer_inst_id = g_peer_inst_id,
-        strlcpy(fup.svc_info, NAN_MSG, ESP_WIFI_MAX_SVC_INFO_LEN);
-
-      /* Reply to the message from a subscriber */
-      esp_wifi_nan_send_message(&fup);
-    }
-    vTaskDelay(10);
-  }
-}
-
-uint8_t wifi_nan_publish(void) {
+uint8_t nan_publish(void) {
   nan_event_group = xEventGroupCreate();
   esp_event_handler_instance_t instance_any_id;
   ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
@@ -138,6 +140,8 @@ void initialise_wifi(void) {
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM) );
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
+  ESP_ERROR_CHECK(esp_wifi_start());
 }
 
 void app_main(void) {
@@ -150,8 +154,8 @@ void app_main(void) {
   ESP_ERROR_CHECK(ret);
 
   initialise_wifi();
+  uint8_t pub_id = nan_publish();
   ESP_LOGI(tag, "NAN Initialized");
-  uint8_t pub_id = wifi_nan_publish();
-  wifi_nan_subscribe();
+  nan_subscribe();
   loop_events(pub_id);
 }
