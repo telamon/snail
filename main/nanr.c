@@ -105,12 +105,6 @@ uint8_t nan_publish(void) {
    */
   bool ndp_require_consent = true;
 
-  /* Start NAN Discovery */
-  wifi_nan_config_t nan_cfg = WIFI_NAN_CONFIG_DEFAULT();
-
-  esp_netif_create_default_wifi_nan();
-  esp_wifi_nan_start(&nan_cfg);
-
   ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
         WIFI_EVENT_NDP_INDICATION,
         &nan_ndp_indication_event_handler,
@@ -140,8 +134,15 @@ void initialise_wifi(void) {
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM) );
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
-  ESP_ERROR_CHECK(esp_wifi_start());
+
+  // Maybe redundant due esp_wifi_nan_start()
+  // ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NAN));
+  // ESP_ERROR_CHECK(esp_wifi_start());
+
+  /* Start NAN Discovery */
+  wifi_nan_config_t nan_cfg = WIFI_NAN_CONFIG_DEFAULT();
+  esp_netif_create_default_wifi_nan();
+  ESP_ERROR_CHECK(esp_wifi_nan_start(&nan_cfg));
 }
 
 void app_main(void) {
