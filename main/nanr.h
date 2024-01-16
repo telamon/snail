@@ -42,4 +42,4 @@ int nan_unpublish(struct nan_state *state);
 uint8_t nan_subscribe(struct nan_state *state);
 int nan_unsubscribe(struct nan_state *state);
 int nan_swap_polarity(struct nan_state *state);
-int nan_process_events (struct nan_state *state);
+EventBits_t nan_process_events (struct nan_state *state);

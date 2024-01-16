@@ -1,18 +1,20 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "hal/gpio_types.h"
 #include "nanr.h"
 #include "esp_log.h"
+// WS2812
+#include "hal/gpio_types.h"
 #include "driver/gpio.h"
 #include "led_strip.h"
 #define TAG "snail.c"
-#define BTN GPIO_NUM_39
+#define BTN 39
+// GPIO_NUM_39
 static led_strip_handle_t led_strip;
 
 static void configure_led(void) {
   /* LED strip initialization with the GPIO and pixels number*/
   led_strip_config_t strip_config = {
-      .strip_gpio_num = GPIO_NUM_27,
+      .strip_gpio_num = 27,
       .max_leds = 1, // at least one LED on board
   };
   led_strip_rmt_config_t rmt_config = {
@@ -74,9 +76,12 @@ void app_main(void) {
     hold = b;
 
     display_state(&state);
-    nan_process_events(&state);
+    EventBits_t bits = nan_process_events(&state);
+    if (bits != 0) ESP_LOGI(TAG, "Unhandled event: %lu ", (unsigned long) bits);
+
+    // Clear Display
     led_strip_clear(led_strip);
-    vTaskDelay(10);
+    vTaskDelay(20);
 
     if (i > 4) {
       nan_swap_polarity(&state);

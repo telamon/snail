@@ -89,7 +89,7 @@ static void nan_ndp_confirmed_event_handler(
 ) {
   wifi_event_ndp_confirm_t *evt = (wifi_event_ndp_confirm_t *)event_data;
   if (evt->status == NDP_STATUS_REJECTED) {
-      ESP_LOGE(TAG, "NDP request to Peer "MACSTR" rejected [NDP ID - %d]", MAC2STR(evt->peer_nmi), evt->ndp_id);
+      ESP_LOGE(TAG, "NDP request with Peer "MACSTR" rejected [NDP ID - %d]", MAC2STR(evt->peer_nmi), evt->ndp_id);
       xEventGroupSetBits(g_state->event_group, EV_NDP_FAILED);
   } else {
       // TODO: memcpy entire event?
@@ -238,8 +238,7 @@ void sub_loop(struct nan_state *state) {
   }
 }
 
-int nan_process_events (struct nan_state *state) {
-  ESP_LOGI(TAG, "nan_process_events(status: %i)", state->status);
+EventBits_t nan_process_events (struct nan_state *state) {
   EventBits_t bits = xEventGroupWaitBits(
     state->event_group,
     EV_RECEIVE | EV_SERVICE_MATCH | EV_NDP_CONFIRMED | EV_NDP_FAILED,
@@ -247,13 +246,15 @@ int nan_process_events (struct nan_state *state) {
     pdFALSE,
     1000 / portTICK_PERIOD_MS // portMAX_DELAY
   );
+  ESP_LOGI(TAG, "nan_process_events(status: %i, bits: %lu)", state->status, (unsigned long) bits);
+
   if (bits & EV_RECEIVE) { // TODO: Supported but not used?
     ESP_LOGI(TAG, "Incoming Peer Handshake svc: %i; peer_id: %i", state->pub_id, state->peer_id);
     xEventGroupClearBits(state->event_group, EV_RECEIVE);
     wifi_nan_followup_params_t fup = {0};
     fup.inst_id = state->pub_id;
     fup.peer_inst_id = state->peer_id;
-    // 64-bytes handshake, TODO: suggestion; Protocol-version + Latest Block
+    // 64-bytes handshake, TODO: suggestion; advertiese protocol-version + Latest Block timestimpe?
     strlcpy(fup.svc_info, NAN_MSG, ESP_WIFI_MAX_SVC_INFO_LEN);
     esp_wifi_nan_send_message(&fup);
   } else if (bits & EV_SERVICE_MATCH) { // Service match
@@ -279,14 +280,19 @@ int nan_process_events (struct nan_state *state) {
     } else {
       // rpc_listen(&state, 1337);
     }
+    // xEventGroupSetBits(state->event_group, REMOTE_PEER_NETIF);
   } else if (bits & EV_NDP_FAILED) {
     xEventGroupClearBits(state->event_group, EV_NDP_FAILED);
     ESP_LOGI(TAG, "Failed to setup NAN Datapath");
   } else if (bits) {
-    return bits; // Unknown Event;
+    // TODO: not sure about this,
+    // have to rethink the event-group later
+    // if goal is to have multiple non-blocking components.
+    // return xEventGroupClearBits(state->event_group, bits); // Clear Unknown Event;
+    return bits;
   }
   // vTaskDelay(10);
-  return ESP_OK;
+  return xEventGroupGetBits(state->event_group);
 }
 
 /**
