@@ -1,15 +1,15 @@
 /*
  * SPDX-FileCopyrightText: 2023 Decent Labs
- * SPDX-License-Identifier: Unlicense OR CC0-1.0
+ * SPDX-License-Identifier: AGPLv3 During R&D; 1.0 Release as CC0-1.0
+ * Current Version: 0.1.0
  */
 /*
  * nanr.c
  * Neighbour Aware Network Relay
  */
+#include "nanr.h"
 #include <string.h>
 #include "esp_wifi_types.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
@@ -19,29 +19,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
-#define NAN_TOPIC "snail"
-#define NAN_FILTER ""
-#define NAN_MSG "snail0"
-const char *TAG = NAN_TOPIC;
-
-// Publisher
-static const int EV_RECEIVE = BIT0; // TODO: unused?
-// Subscriber / initiator
-static const int EV_SERVICE_MATCH = BIT1;
-static const int EV_NDP_CONFIRMED = BIT2;
-static const int EV_NDP_FAILED = BIT3;
-
-struct nan_state {
-  EventGroupHandle_t event_group;
-  esp_netif_t *esp_netif; // Localhost
-  // Pub state
-  uint8_t pub_id; // Published Service id
-  uint8_t peer_id; // incoming Peer
-  // Sub state
-  uint8_t sub_id; // Subscribed Service id
-  wifi_event_nan_svc_match_t svc_match_evt; // Matched Service info
-  uint8_t peer_ndi[6]; // MAC of DataPathed Peer
-};
+#define TAG "nanr.c"
 static struct nan_state *g_state;
 
 int nan_unpublish(struct nan_state *state) {
