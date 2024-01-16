@@ -23,24 +23,26 @@
 static struct nan_state *g_state;
 
 int nan_unpublish(struct nan_state *state) {
-  if (state->pub_id == 0) return ESP_OK; // NO-OP
+  if (state->status != PUBLISHED) return -1; // NO-OP
   int res = esp_wifi_nan_cancel_service(state->pub_id);
   ESP_ERROR_CHECK(res);
   if (res == ESP_OK) {
     state->pub_id = 0;
     state->peer_id = 0;
+    state->status = CLUSTERING;
   }
   return res;
 }
 
 int nan_unsubscribe(struct nan_state *state) {
-  if (state->sub_id == 0) return ESP_OK; // NO-OP
+  if (state->status != SUBSCRIBED) return -1; // NO-OP
   int res = esp_wifi_nan_cancel_service(state->sub_id);
   ESP_ERROR_CHECK(res);
   if (res == ESP_OK) {
     state->sub_id = 0;
     memset(&state->peer_ndi, 0, sizeof(state->peer_ndi));
     memset(&state->svc_match_evt, 0, sizeof(state->svc_match_evt));
+    state->status = CLUSTERING;
   }
   return res;
 }
@@ -77,6 +79,8 @@ static void nan_ndp_indication_event_handler(
   esp_wifi_nan_datapath_resp(&ndp_resp);
 }
 
+// This handler get's triggered on both ends
+// when data-path is established.
 static void nan_ndp_confirmed_event_handler(
   void *arg,
   esp_event_base_t event_base,
@@ -88,6 +92,7 @@ static void nan_ndp_confirmed_event_handler(
       ESP_LOGE(TAG, "NDP request to Peer "MACSTR" rejected [NDP ID - %d]", MAC2STR(evt->peer_nmi), evt->ndp_id);
       xEventGroupSetBits(g_state->event_group, EV_NDP_FAILED);
   } else {
+      // TODO: memcpy entire event?
       memcpy(g_state->peer_ndi, evt->peer_ndi, sizeof(g_state->peer_ndi)); // stash NAN Data Interface MAC
       xEventGroupSetBits(g_state->event_group, EV_NDP_CONFIRMED);
   }
@@ -107,6 +112,7 @@ static void nan_service_match_event_handler(
 
 
 uint8_t nan_subscribe (struct nan_state *state) {
+  if (state->status != CLUSTERING) return -1;
   // Setup Event Handlers for Service Match & Datapath confirm
   esp_event_handler_instance_t instance_any_id;
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
@@ -132,11 +138,15 @@ uint8_t nan_subscribe (struct nan_state *state) {
   };
   state->sub_id = esp_wifi_nan_subscribe_service(&config);
   if (state->sub_id == 0) ESP_LOGE(TAG, "Subscribe Failed, %i", state->sub_id);
-  else ESP_LOGI(TAG, "Subscribed Succeeded %i", state->sub_id);
+  else {
+    state->status = SUBSCRIBED;
+    ESP_LOGI(TAG, "Subscribed Succeeded %i", state->sub_id);
+  }
   return state->sub_id;
 }
 
 uint8_t nan_publish(struct nan_state *state) {
+  if (state->status != CLUSTERING) return -1;
   esp_event_handler_instance_t instance_any_id;
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
     WIFI_EVENT,
@@ -170,11 +180,15 @@ uint8_t nan_publish(struct nan_state *state) {
   };
   state->pub_id = esp_wifi_nan_publish_service(&publish_cfg, ndp_require_consent);
   if (state->pub_id == 0) ESP_LOGE(TAG, "Publish Failed %i", state->pub_id);
-  else ESP_LOGI(TAG, "Published Suceeded %i", state->pub_id);
+  else {
+    state->status = PUBLISHED;
+    ESP_LOGI(TAG, "Published Suceeded %i", state->pub_id);
+  }
   return state->pub_id;
 }
 
 void nan_init(struct nan_state *state) {
+  if (state->status != OFFLINE) return;
   // Initialized event-group/'private emitter'/bus
   state->event_group = xEventGroupCreate();
 
@@ -200,6 +214,7 @@ void nan_init(struct nan_state *state) {
   wifi_nan_config_t nan_cfg = WIFI_NAN_CONFIG_DEFAULT();
   state->esp_netif = esp_netif_create_default_wifi_nan();
   ESP_ERROR_CHECK(esp_wifi_nan_start(&nan_cfg));
+  state->status = CLUSTERING;
   g_state = state; // Leak state
 }
 
@@ -223,51 +238,57 @@ void sub_loop(struct nan_state *state) {
   }
 }
 
-void loop_events (struct nan_state *state) {
-  ESP_LOGI(TAG, "Entering Loop");
-  while (1) {
-    EventBits_t bits = xEventGroupWaitBits(
-      state->event_group,
-      EV_RECEIVE | EV_SERVICE_MATCH | EV_NDP_CONFIRMED | EV_NDP_FAILED,
-      pdFALSE,
-      pdFALSE,
-      portMAX_DELAY
-    );
-    if (bits & EV_RECEIVE) { // TODO: Supported but not used?
-      ESP_LOGI(TAG, "Incoming Peer Handshake svc: %i; peer_id: %i", state->pub_id, state->peer_id);
-      xEventGroupClearBits(state->event_group, EV_RECEIVE);
-      wifi_nan_followup_params_t fup = {0};
-      fup.inst_id = state->pub_id;
-      fup.peer_inst_id = state->peer_id;
-      // 64-bytes handshake, TODO: suggestion; Protocol-version + Latest Block
-      strlcpy(fup.svc_info, NAN_MSG, ESP_WIFI_MAX_SVC_INFO_LEN);
-      esp_wifi_nan_send_message(&fup);
-    } else if (bits & EV_SERVICE_MATCH) { // Service match
-      ESP_LOGI(TAG, "Service Found");
-      xEventGroupClearBits(state->event_group, EV_SERVICE_MATCH);
-      wifi_nan_datapath_req_t ndp_req = {0};
-      ndp_req.confirm_required = true;
-      ndp_req.pub_id = state->svc_match_evt.publish_id;
-      memcpy(ndp_req.peer_mac, state->svc_match_evt.pub_if_mac, sizeof(ndp_req.peer_mac));
-      // Outgoing Connection
-      ESP_LOGI(TAG, "Connecting to "MACSTR"", MAC2STR(ndp_req.peer_mac));
-      esp_wifi_nan_datapath_req(&ndp_req);
-    } else if (bits & EV_NDP_CONFIRMED) {
-      xEventGroupClearBits(state->event_group, EV_NDP_CONFIRMED);
-      vTaskDelay(5000 / portTICK_PERIOD_MS); // Why?
-      ESP_LOGI(TAG, "NAN Datapath READY");
-      // ping_nan_peer(nan_netif);
-    } else if (bits & EV_NDP_FAILED) {
-      xEventGroupClearBits(state->event_group, EV_NDP_FAILED);
-      ESP_LOGI(TAG, "Failed to setup NAN Datapath");
+int nan_process_events (struct nan_state *state) {
+  ESP_LOGI(TAG, "nan_process_events(status: %i)", state->status);
+  EventBits_t bits = xEventGroupWaitBits(
+    state->event_group,
+    EV_RECEIVE | EV_SERVICE_MATCH | EV_NDP_CONFIRMED | EV_NDP_FAILED,
+    pdFALSE,
+    pdFALSE,
+    1000 / portTICK_PERIOD_MS // portMAX_DELAY
+  );
+  if (bits & EV_RECEIVE) { // TODO: Supported but not used?
+    ESP_LOGI(TAG, "Incoming Peer Handshake svc: %i; peer_id: %i", state->pub_id, state->peer_id);
+    xEventGroupClearBits(state->event_group, EV_RECEIVE);
+    wifi_nan_followup_params_t fup = {0};
+    fup.inst_id = state->pub_id;
+    fup.peer_inst_id = state->peer_id;
+    // 64-bytes handshake, TODO: suggestion; Protocol-version + Latest Block
+    strlcpy(fup.svc_info, NAN_MSG, ESP_WIFI_MAX_SVC_INFO_LEN);
+    esp_wifi_nan_send_message(&fup);
+  } else if (bits & EV_SERVICE_MATCH) { // Service match
+    ESP_LOGI(TAG, "Service Found");
+    xEventGroupClearBits(state->event_group, EV_SERVICE_MATCH);
+    wifi_nan_datapath_req_t ndp_req = {0};
+    ndp_req.confirm_required = true;
+    ndp_req.pub_id = state->svc_match_evt.publish_id;
+    memcpy(ndp_req.peer_mac, state->svc_match_evt.pub_if_mac, sizeof(ndp_req.peer_mac));
+    // Outgoing Connection
+    ESP_LOGI(TAG, "Connecting to "MACSTR"", MAC2STR(ndp_req.peer_mac));
+    esp_wifi_nan_datapath_req(&ndp_req);
+  } else if (bits & EV_NDP_CONFIRMED) {
+    xEventGroupClearBits(state->event_group, EV_NDP_CONFIRMED);
+    bool initiator = state->status == SUBSCRIBED;
+    state->status = NDP_ESTABLISHED;
+    ESP_LOGI(TAG, "NAN Datapath READY");
+    if (initiator) {
+      vTaskDelay(2000 / portTICK_PERIOD_MS); // Give non-initiator a headstart
+      ip_addr_t target_addr = {0};
+      esp_wifi_nan_get_ipv6_linklocal_from_mac(&target_addr.u_addr.ip6, state->peer_ndi);
+      // rpc_connect(&state, &target_addr, 1337);
+    } else {
+      // rpc_listen(&state, 1337);
     }
-    vTaskDelay(10);
+  } else if (bits & EV_NDP_FAILED) {
+    xEventGroupClearBits(state->event_group, EV_NDP_FAILED);
+    ESP_LOGI(TAG, "Failed to setup NAN Datapath");
+  } else if (bits) {
+    return bits; // Unknown Event;
   }
+  // vTaskDelay(10);
+  return ESP_OK;
 }
 
-bool nan_is_subscriber(struct nan_state *state) { return state->sub_id != 0; }
-bool nan_is_publisher(struct nan_state *state) { return state->pub_id != 0; }
-// TODO: nan_has_active_datapath()
 /**
  * Turns subscriber into publisher and vice-versa
  * @returns 0: Publisher, 1: Subscriber, -1: Error
@@ -276,7 +297,7 @@ int nan_swap_polarity(struct nan_state *state) {
   if (state->pub_id != 0 && state->sub_id != 0) {
     ESP_LOGI(TAG, "Impossible state pub_id: %i, sub_id: %i", state->pub_id, state->sub_id);
     return -1;
-  } else if (nan_is_publisher(state)) {
+  } else if (state->pub_id != 0) {
     nan_unpublish(state);
     nan_subscribe(state);
     return 0;
