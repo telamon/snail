@@ -1,3 +1,4 @@
+#include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nanr.h"
@@ -6,7 +7,9 @@
 #include "hal/gpio_types.h"
 #include "driver/gpio.h"
 #include "led_strip.h"
+
 #define TAG "snail.c"
+
 #define BTN GPIO_NUM_39
 
 static led_strip_handle_t led_strip;
@@ -43,6 +46,13 @@ void display_state (struct nan_state *state) {
   }
 }
 
+void APP_ERR (int errcode) {
+  // 1. Error check without abort()
+  // 2. stick into error state
+  // 3. optionally reboot after 5 sec.
+  // (crashed snails should just reset)
+}
+
 void app_main(void) {
   ESP_LOGI(TAG, "snail.c main()");
 
@@ -59,6 +69,7 @@ void app_main(void) {
   nan_subscribe(&state);
   display_state(&state);
   // Hookup button
+  ESP_ERROR_CHECK_WITHOUT_ABORT
   ESP_ERROR_CHECK(gpio_set_direction(BTN, GPIO_MODE_INPUT));
   ESP_ERROR_CHECK(gpio_pullup_en(BTN));
   // ESP_ERROR_CHECK(gpio_intr_enable(BTN));

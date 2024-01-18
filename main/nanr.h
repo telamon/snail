@@ -1,4 +1,4 @@
-/* NAN Radio */
+/* NAN Radio Peer Provider */
 #ifndef NANR_H
 #define NANR_H
 #include "freertos/FreeRTOS.h"
@@ -7,7 +7,7 @@
 #include "esp_system.h"
 #include "esp_wifi.h"
 #define delay(ms) vTaskDelay((ms) / portTICK_PERIOD_MS)
-#define APP_MAIN
+
 #define NAN_TOPIC "snail"
 #define NAN_FILTER ""
 #define NAN_MSG "snail0"
