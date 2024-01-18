@@ -33,7 +33,7 @@ Optional addons:
 
 ## Architecture
 
-[Sneakernet](https://en.wikipedia.org/wiki/Sneakernet) is the art of transfering data by moving it in physical space without relying on the internet.
+[Sneakernet](https://en.wikipedia.org/wiki/Sneakernet) is the art of transferring data by physical transportation and without the use of internet.
 The protocol relies on eventual message delivery within geographical bounds.
 
 A snail node is fully autonomous and transitions between the following 5 states:
@@ -63,6 +63,11 @@ A snail node is fully autonomous and transitions between the following 5 states:
 | GREEN   | timeout       | WHITE  |
 | GREEN   | reconciliated | WHITE  |
 
+### Message Format
+`TDB`
+
+### Interaction with non-snail devices
+`TDB`
 
 ## References
 - It's all connected.
