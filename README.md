@@ -1,8 +1,8 @@
-# SNAIL (esp32)
+# snail
 
-- Slow Notes Around Immediate Location
+> Slow Notes Around Immediate Location
 
-Snail is a relayed protocol for unsupervised sneakernet devices.
+Snail is a _work-in-progress_ relayed protocol for unsupervised sneakernet devices.
 This repository contains a full node implemenation that uses Wifi NAN for promiscuous communication
 as a means to research, iterate and simplify.
 
@@ -33,18 +33,19 @@ Optional addons:
 
 ## Architecture
 
-[Sneakernet](https://en.wikipedia.org/wiki/Sneakernet) is the art of transfering data by moving it in physical space without relying on the internet.
+[Sneakernet](https://en.wikipedia.org/wiki/Sneakernet) is the art of transferring data by physical transportation and without the use of internet.
 The protocol relies on eventual message delivery within geographical bounds.
 
-A snail node is fully autonomous and transitions between the following 5 states named by color:
-![Fig1. Seek, Notify, Attach, Inform, Leave.](./doc/states.svg)
-(`White`, `Blue`, `Red`, `Purple`, `Green`).
+A snail node is fully autonomous and transitions between the following 5 states:
 
 - `WHITE` wakeup state, cleanup previous peer connections and re-init radios if necessary
 - `RED` Searching for beacons, initiate connections to peers.
 - `BLUE` Broadcast beacons, accept peer connections.
-- `PURPLE` Peer found, establish high-bandwidth connection.
+- `PURPLE` Peer found, establish direct connection.
 - `GREEN` Exchanging messages.
+
+![Fig1. Seek, Notify, Attach, Inform, Leave.](./docs/states.svg)
+
 
 
 **Complete Table of Transitions**
@@ -62,6 +63,11 @@ A snail node is fully autonomous and transitions between the following 5 states 
 | GREEN   | timeout       | WHITE  |
 | GREEN   | reconciliated | WHITE  |
 
+### Message Format
+`TDB`
+
+### Interaction with non-snail devices
+`TDB`
 
 ## References
 - It's all connected.
