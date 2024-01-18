@@ -7,8 +7,8 @@
 #include "driver/gpio.h"
 #include "led_strip.h"
 #define TAG "snail.c"
-#define BTN 39
-// GPIO_NUM_39
+#define BTN GPIO_NUM_39
+
 static led_strip_handle_t led_strip;
 
 static void configure_led(void) {
@@ -34,11 +34,12 @@ void display_state (struct nan_state *state) {
   switch (state->status) {
     case OFFLINE: return set_led(0x101010);
     case CLUSTERING: return set_led(0x008080);
-    case PUBLISHED: return set_led(0x601070);
-    case SUBSCRIBED: return set_led(0x100590);
-    case NDP_ESTABLISHED: return set_led(0x154015);
-    case CONNECTING: return set_led(0x1070010);
-    case RELAYING: return set_led(0x00ff00);
+    // ...
+    case SEEK: return set_led(0xff0000);
+    case NOTIFY: return set_led(0x0000ff);
+    case ATTACH: return set_led(0x154015);
+    case INFORM: return set_led(0x10ff010);
+    case LEAVE: return set_led(0xffffff);
   }
 }
 
@@ -65,13 +66,13 @@ void app_main(void) {
   int hold = gpio_get_level(BTN);
   int i = 0;
   while (1) {
-    int b = gpio_get_level(BTN);
+    int b = gpio_get_level(BTN); // TODO: attempt interrupts
     if (hold != b && !b) {
       set_led(0x121212);
       int res = nan_swap_polarity(&state);
       if (res == -1) set_led(0xff0000); // Fail
       else set_led(0x00ff00); // success
-      vTaskDelay(50);
+      delay(50);
     }
     hold = b;
 
@@ -79,12 +80,12 @@ void app_main(void) {
     EventBits_t bits = nan_process_events(&state);
     if (bits != 0) ESP_LOGI(TAG, "Unhandled event: %lu ", (unsigned long) bits);
 
-    // Clear Display
+    /* Clear Display */
     led_strip_clear(led_strip);
-    vTaskDelay(20);
+    delay(20);
 
     if (i > 4) {
-      nan_swap_polarity(&state);
+      // nan_swap_polarity(&state);
       i = 0;
     } else i++;
   }

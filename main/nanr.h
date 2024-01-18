@@ -1,9 +1,12 @@
+/* NAN Radio */
+#ifndef NANR_H
+#define NANR_H
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
-
+#define delay(ms) vTaskDelay((ms) / portTICK_PERIOD_MS)
 #define APP_MAIN
 #define NAN_TOPIC "snail"
 #define NAN_FILTER ""
@@ -16,13 +19,16 @@
 #define EV_NDP_FAILED BIT3
 enum nan_peer_status {
   OFFLINE = 0,
-  CLUSTERING = 1,
-  PUBLISHED = 2,
-  SUBSCRIBED = 3,
-  NDP_ESTABLISHED = 4,
-  CONNECTING = 5,
-  RELAYING = 6,
+  CLUSTERING = 1, // TODO: Replace with LEAVE
+  // Significant ones
+  SEEK = 2,
+  NOTIFY = 3,
+  ATTACH = 4,
+  INFORM = 5,
+  LEAVE = 6,
 };
+
+const char* status_str(enum nan_peer_status s);
 struct nan_state {
   enum nan_peer_status status;
   EventGroupHandle_t event_group;
@@ -43,3 +49,4 @@ uint8_t nan_subscribe(struct nan_state *state);
 int nan_unsubscribe(struct nan_state *state);
 int nan_swap_polarity(struct nan_state *state);
 EventBits_t nan_process_events (struct nan_state *state);
+#endif

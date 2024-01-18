@@ -17,13 +17,29 @@
 #include "esp_mac.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "lwip/ip6_addr.h"
 #include "nvs_flash.h"
+#include "rpc.c"
 
 #define TAG "nanr.c"
 static struct nan_state *g_state;
 
+const char* status_str(enum nan_peer_status s) {
+  switch (s) {
+    case SEEK: return "SEEK";
+    case NOTIFY: return "NOTIFY";
+    case ATTACH: return "ATTACH";
+    case INFORM: return "INFORM";
+    case LEAVE: return "LEAVE";
+    case OFFLINE: return "OFFLIN";
+    case CLUSTERING: return "CLUSTERING";
+    default: return "unknown";
+  }
+}
+
+
 int nan_unpublish(struct nan_state *state) {
-  if (state->status != PUBLISHED) return -1; // NO-OP
+  if (state->status != NOTIFY) return -1; // NO-OP
   int res = esp_wifi_nan_cancel_service(state->pub_id);
   ESP_ERROR_CHECK(res);
   if (res == ESP_OK) {
@@ -35,7 +51,7 @@ int nan_unpublish(struct nan_state *state) {
 }
 
 int nan_unsubscribe(struct nan_state *state) {
-  if (state->status != SUBSCRIBED) return -1; // NO-OP
+  if (state->status != SEEK) return -1; // NO-OP
   int res = esp_wifi_nan_cancel_service(state->sub_id);
   ESP_ERROR_CHECK(res);
   if (res == ESP_OK) {
@@ -139,7 +155,7 @@ uint8_t nan_subscribe (struct nan_state *state) {
   state->sub_id = esp_wifi_nan_subscribe_service(&config);
   if (state->sub_id == 0) ESP_LOGE(TAG, "Subscribe Failed, %i", state->sub_id);
   else {
-    state->status = SUBSCRIBED;
+    state->status = SEEK;
     ESP_LOGI(TAG, "Subscribed Succeeded %i", state->sub_id);
   }
   return state->sub_id;
@@ -181,7 +197,7 @@ uint8_t nan_publish(struct nan_state *state) {
   state->pub_id = esp_wifi_nan_publish_service(&publish_cfg, ndp_require_consent);
   if (state->pub_id == 0) ESP_LOGE(TAG, "Publish Failed %i", state->pub_id);
   else {
-    state->status = PUBLISHED;
+    state->status = NOTIFY;
     ESP_LOGI(TAG, "Published Suceeded %i", state->pub_id);
   }
   return state->pub_id;
@@ -216,6 +232,7 @@ void nan_init(struct nan_state *state) {
   ESP_ERROR_CHECK(esp_wifi_nan_start(&nan_cfg));
   state->status = CLUSTERING;
   g_state = state; // Leak state
+  rpc_listen();
 }
 
 void sub_loop(struct nan_state *state) {
@@ -246,7 +263,7 @@ EventBits_t nan_process_events (struct nan_state *state) {
     pdFALSE,
     1000 / portTICK_PERIOD_MS // portMAX_DELAY
   );
-  ESP_LOGI(TAG, "nan_process_events(status: %i, bits: %lu)", state->status, (unsigned long) bits);
+  ESP_LOGI(TAG, "nan_process_events(status: %s, bits: %lu)", status_str(state->status), (unsigned long) bits);
 
   if (bits & EV_RECEIVE) { // TODO: Supported but not used?
     ESP_LOGI(TAG, "Incoming Peer Handshake svc: %i; peer_id: %i", state->pub_id, state->peer_id);
@@ -257,7 +274,9 @@ EventBits_t nan_process_events (struct nan_state *state) {
     // 64-bytes handshake, TODO: suggestion; advertiese protocol-version + Latest Block timestimpe?
     strlcpy(fup.svc_info, NAN_MSG, ESP_WIFI_MAX_SVC_INFO_LEN);
     esp_wifi_nan_send_message(&fup);
-  } else if (bits & EV_SERVICE_MATCH) { // Service match
+  }
+
+  else if (bits & EV_SERVICE_MATCH) { // Service match
     ESP_LOGI(TAG, "Service Found");
     xEventGroupClearBits(state->event_group, EV_SERVICE_MATCH);
     wifi_nan_datapath_req_t ndp_req = {0};
@@ -267,25 +286,34 @@ EventBits_t nan_process_events (struct nan_state *state) {
     // Outgoing Connection
     ESP_LOGI(TAG, "Connecting to "MACSTR"", MAC2STR(ndp_req.peer_mac));
     esp_wifi_nan_datapath_req(&ndp_req);
-  } else if (bits & EV_NDP_CONFIRMED) {
+  }
+
+  else if (bits & EV_NDP_CONFIRMED) {
     xEventGroupClearBits(state->event_group, EV_NDP_CONFIRMED);
-    bool initiator = state->status == SUBSCRIBED;
-    state->status = NDP_ESTABLISHED;
+    bool initiator = state->status == SEEK;
+    state->status = ATTACH;
     ESP_LOGI(TAG, "NAN Datapath READY");
+    ip_addr_t target_addr = {0};
+    esp_wifi_nan_get_ipv6_linklocal_from_mac(&target_addr.u_addr.ip6, state->peer_ndi);
     if (initiator) {
       vTaskDelay(2000 / portTICK_PERIOD_MS); // Give non-initiator a headstart
-      ip_addr_t target_addr = {0};
-      esp_wifi_nan_get_ipv6_linklocal_from_mac(&target_addr.u_addr.ip6, state->peer_ndi);
-      // rpc_connect(&state, &target_addr, 1337);
+      ESP_LOGI(TAG, "Connecting to remote peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
+      rpc_connect(state->esp_netif, &target_addr);
+      state->status = INFORM;
     } else {
-      // rpc_listen(&state, 1337);
+      ESP_LOGI(TAG, "Waiting for peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
+      state->status = INFORM;
     }
     // xEventGroupSetBits(state->event_group, REMOTE_PEER_NETIF);
-  } else if (bits & EV_NDP_FAILED) {
+  }
+
+  else if (bits & EV_NDP_FAILED) {
     xEventGroupClearBits(state->event_group, EV_NDP_FAILED);
     ESP_LOGI(TAG, "Failed to setup NAN Datapath");
-  } else if (bits) {
-    // TODO: not sure about this,
+  }
+
+  // TODO: not sure about this,
+  else if (bits) {
     // have to rethink the event-group later
     // if goal is to have multiple non-blocking components.
     // return xEventGroupClearBits(state->event_group, bits); // Clear Unknown Event;

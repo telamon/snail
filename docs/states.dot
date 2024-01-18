@@ -1,0 +1,18 @@
+digraph {
+  rankdir=LR;
+  node [shape=circle];
+  WHITE [style=filled, fillcolor="gray90"];
+  RED [style=filled, fillcolor="lightpink"];
+  BLUE [style=filled, fillcolor="lightblue"];
+  PURPLE [style=filled, fillcolor="thistle"];
+  GREEN [style=filled, fillcolor="palegreen"];
+  WHITE -> RED;
+  WHITE -> BLUE;
+  RED -> BLUE;
+  BLUE -> RED;
+  RED -> PURPLE;
+  BLUE -> PURPLE;
+  PURPLE -> GREEN;
+  PURPLE -> WHITE;
+  GREEN -> WHITE;
+}
