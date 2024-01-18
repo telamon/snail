@@ -1,8 +1,8 @@
-# SNAIL (on esp32)
+# snail
 
 > Slow Notes Around Immediate Location
 
-Snail is a relayed protocol for unsupervised sneakernet devices.
+Snail is a _work-in-progress_ relayed protocol for unsupervised sneakernet devices.
 This repository contains a full node implemenation that uses Wifi NAN for promiscuous communication
 as a means to research, iterate and simplify.
 
