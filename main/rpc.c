@@ -15,15 +15,47 @@
 #define KEEPALIVE_COUNT             3
 
 static struct {
-  bool listening;
   TaskHandle_t server_task;
+  bool listening;
   int listen_sock;
+
+  TaskHandle_t client_task;
+  esp_netif_t *netif;
+  ip_addr_t *addr;
+  char rx_buffer[4096];
 } rpc_state;
 
+static void initiator_comm (const int sock) {
+  char *rx_buffer = rpc_state.rx_buffer;
+  const char *payload = "Message from ESP32 ";
+  int rounds = 0; // Tmp;
+  while (1) {
+    int err = send(sock, payload, strlen(payload), 0);
+    if (err < 0) {
+      ESP_LOGE(RPC, "Error occurred during sending: (%d) %s", errno, lwip_strerr(errno));
+      break;
+    }
 
-static void do_retransmit(const int sock) {
+    int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
+    // Error occurred during receiving
+    if (len < 0) {
+      ESP_LOGE(RPC, "recv failed: errno (%d) %s", errno, lwip_strerr(errno));
+      break;
+    }
+    // Data received
+    else {
+      rx_buffer[len] = 0; // Null-terminate whatever we received and treat like a string
+      ESP_LOGI(RPC, "C: Received %d bytes", len);
+      ESP_LOGI(RPC, "C: %s", rx_buffer);
+    }
+    if (rounds++ > 10) break;
+  }
+}
+
+/* not sure why static */
+static void server_comm(const int sock) {
+    char *rx_buffer = rpc_state.rx_buffer;
     int len;
-    char rx_buffer[128];
     do {
         len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
         if (len < 0) {
@@ -48,9 +80,10 @@ static void do_retransmit(const int sock) {
                 to_write -= written;
             }
         }
-      vTaskDelay(1);
+      vTaskDelay(1); // Sleep inbetween messages
     } while (len > 0);
 }
+
 
 static void tcp_server_task(void *pvParameters) {
     char addr_str[128];
@@ -88,14 +121,14 @@ static void tcp_server_task(void *pvParameters) {
     if (err != 0) {
         ESP_LOGE(RPC, "Socket unable to bind: (%d) %s", errno, lwip_strerr(errno));
         ESP_LOGE(RPC, "IPPROTO: %d", addr_family);
-        goto CLEAN_UP;
+        goto DEINIT;
     }
     ESP_LOGI(RPC, "Socket bound, port %d", PORT);
 
     err = listen(rpc_state.listen_sock, 1);
     if (err != 0) {
         ESP_LOGE(RPC, "Error occurred during listen: (%d) %s", errno, lwip_strerr(errno));
-        goto CLEAN_UP;
+        goto DEINIT;
     }
     rpc_state.listening = true;
     while (rpc_state.listening) {
@@ -118,28 +151,38 @@ static void tcp_server_task(void *pvParameters) {
             inet6_ntoa_r(((struct sockaddr_in6 *)&source_addr)->sin6_addr, addr_str, sizeof(addr_str) - 1);
         }
         ESP_LOGI(RPC, "Socket accepted ip address: %s", addr_str);
-
-        do_retransmit(sock);
+        g_state->status = INFORM;
+        server_comm(sock);
 
         shutdown(sock, 0);
         close(sock);
         vTaskDelay(1);
     }
 
-CLEAN_UP:
+DEINIT:
     close(rpc_state.listen_sock);
     vTaskDelete(rpc_state.server_task);
+    rpc_state.server_task = 0; // Bad idea?
+    g_state->status = LEAVE;
 }
 
-int rpc_listen () {
+void rpc_listen () {
   xTaskCreate(tcp_server_task, "tcp_server", 4096, (void*)AF_INET6, 5, &rpc_state.server_task);
-  return 0;
+}
+static struct client_target {
+} client_state;
+
+
+void tcp_client_task(void *pvParameters);
+void rpc_connect(esp_netif_t *netif, ip_addr_t *target) {
+  rpc_state.addr = target;
+  rpc_state.netif = netif;
+  xTaskCreate(tcp_client_task, "tcp_client", 4096, &client_state, 5, &rpc_state.client_task);
 }
 
-int rpc_connect(esp_netif_t *netif, ip_addr_t *target) {
-  const char *payload = "Message from ESP32 ";
+void tcp_client_task(void *pvParameters) {
+  ip_addr_t *target = rpc_state.addr;
   const char *host = ip6addr_ntoa(&target->u_addr.ip6);
-  char rx_buffer[128];
 
   struct sockaddr_in6 dest_addr = { 0 };
   /* lwip is confusing; in6_addr posix compliant while ip6_addr_t is LWIP local? */
@@ -147,51 +190,30 @@ int rpc_connect(esp_netif_t *netif, ip_addr_t *target) {
   dest_addr.sin6_family = AF_INET6;
   dest_addr.sin6_port = htons(PORT);
 
-  while (1) {
-    int sock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-    if (sock < 0) {
-      ESP_LOGE(RPC, "Unable to create socket: (%d) %s", errno, lwip_strerr(errno));
-      break;
-    }
-    ESP_LOGI(RPC, "Socket created, connecting to %s:%d", host, PORT);
-
-    dest_addr.sin6_scope_id = esp_netif_get_netif_impl_index(netif);
-    ESP_LOGI(RPC, "Interface index: %" PRIu32, dest_addr.sin6_scope_id);
-
-    int err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-    if (err != 0) {
-      ESP_LOGE(RPC, "Socket unable to connect: (%d) %s", errno, lwip_strerr(errno));
-      break;
-    }
-    ESP_LOGI(RPC, "Successfully connected");
-    int rounds = 0; // Tmp;
-    while (1) {
-      int err = send(sock, payload, strlen(payload), 0);
-      if (err < 0) {
-        ESP_LOGE(RPC, "Error occurred during sending: (%d) %s", errno, lwip_strerr(errno));
-        break;
-      }
-
-      int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
-      // Error occurred during receiving
-      if (len < 0) {
-        ESP_LOGE(RPC, "recv failed: errno (%d) %s", errno, lwip_strerr(errno));
-        break;
-      }
-      // Data received
-      else {
-        rx_buffer[len] = 0; // Null-terminate whatever we received and treat like a string
-        ESP_LOGI(RPC, "C: Received %d bytes from %s:", len, host);
-        ESP_LOGI(RPC, "C: %s", rx_buffer);
-      }
-      if (rounds++ > 10) break;
-    }
-
-    if (sock != -1) {
-      ESP_LOGE(RPC, "Shutting down socket and restarting...");
-      shutdown(sock, 0);
-      close(sock);
-    }
+  int sock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+  if (sock < 0) {
+    ESP_LOGE(RPC, "Unable to create socket: (%d) %s", errno, lwip_strerr(errno));
+    return;
   }
-  return 0;
+  ESP_LOGI(RPC, "Socket created, connecting to %s:%d", host, PORT);
+
+  dest_addr.sin6_scope_id = esp_netif_get_netif_impl_index(rpc_state.netif);
+  ESP_LOGI(RPC, "Interface index: %" PRIu32, dest_addr.sin6_scope_id);
+
+  int err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+  if (err != 0) {
+    ESP_LOGE(RPC, "Socket unable to connect: (%d) %s", errno, lwip_strerr(errno));
+    goto DEINIT;
+  }
+  ESP_LOGI(RPC, "Successfully connected");
+  g_state->status = INFORM;
+  initiator_comm(sock);
+
+DEINIT:
+  if (sock != -1) {
+    ESP_LOGI(RPC, "Socket disconnected %s:%d", host, PORT);
+    shutdown(sock, 0);
+    close(sock);
+  }
+  g_state->status = LEAVE;
 }

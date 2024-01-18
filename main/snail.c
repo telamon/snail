@@ -54,6 +54,7 @@ void APP_ERR (int errcode) {
 }
 
 void app_main(void) {
+  /* Initialization code */
   ESP_LOGI(TAG, "snail.c main()");
 
   configure_led();
@@ -68,8 +69,8 @@ void app_main(void) {
   ESP_LOGI(TAG, "NAN Initialized");
   nan_subscribe(&state);
   display_state(&state);
-  // Hookup button
-  ESP_ERROR_CHECK_WITHOUT_ABORT
+
+  /* Hookup button */
   ESP_ERROR_CHECK(gpio_set_direction(BTN, GPIO_MODE_INPUT));
   ESP_ERROR_CHECK(gpio_pullup_en(BTN));
   // ESP_ERROR_CHECK(gpio_intr_enable(BTN));
@@ -88,8 +89,7 @@ void app_main(void) {
     hold = b;
 
     display_state(&state);
-    EventBits_t bits = nan_process_events(&state);
-    if (bits != 0) ESP_LOGI(TAG, "Unhandled event: %lu ", (unsigned long) bits);
+    APP_ERR(nan_process_events(&state));
 
     /* Clear Display */
     led_strip_clear(led_strip);

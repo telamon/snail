@@ -6,6 +6,14 @@
 /*
  * nanr.c
  * Neighbour Aware Network Relay
+ Usage:
+    void app_main(void) {
+      struct nan_state state = {0};
+      nan_init(&state);
+      // nan_publish(&state);
+      nan_subscribe(&state);
+      while (1) nan_process_events(&state);
+    }
  */
 #include "nanr.h"
 #include <string.h>
@@ -19,10 +27,10 @@
 #include "esp_log.h"
 #include "lwip/ip6_addr.h"
 #include "nvs_flash.h"
-#include "rpc.c"
+
+#include "rpc.c" /* Mhmm... */
 
 #define TAG "nanr.c"
-static struct nan_state *g_state;
 
 const char* status_str(enum nan_peer_status s) {
   switch (s) {
@@ -95,8 +103,9 @@ static void nan_ndp_indication_event_handler(
   esp_wifi_nan_datapath_resp(&ndp_resp);
 }
 
-// This handler get's triggered on both ends
-// when data-path is established.
+/* This handler get's triggered on both ends
+ * when a data-path is established.
+ */
 static void nan_ndp_confirmed_event_handler(
   void *arg,
   esp_event_base_t event_base,
@@ -125,7 +134,6 @@ static void nan_service_match_event_handler(
     memcpy(&g_state->svc_match_evt, evt, sizeof(wifi_event_nan_svc_match_t));
     xEventGroupSetBits(g_state->event_group, EV_SERVICE_MATCH);
 }
-
 
 uint8_t nan_subscribe (struct nan_state *state) {
   if (state->status != CLUSTERING) return -1;
@@ -235,35 +243,27 @@ void nan_init(struct nan_state *state) {
   rpc_listen();
 }
 
-void sub_loop(struct nan_state *state) {
-    // Await service match
-    EventBits_t bits_1 = xEventGroupWaitBits(state->event_group, EV_SERVICE_MATCH, pdFALSE, pdFALSE, portMAX_DELAY);
-    if (bits_1 & EV_SERVICE_MATCH) {
-    /* Broadcast not used or maybe should to signal latest timestamp;
-     * let publisher decide if worth it to establish datapath or not?
-      wifi_nan_followup_params_t fup = {
-          .inst_id = sub_id,
-          .peer_inst_id = g_svc_match_evt.publish_id,
-          .svc_info = EXAMPLE_NAN_SVC_MSG,
-      };
-      memcpy(fup.peer_mac, g_svc_match_evt.pub_if_mac, sizeof(fup.peer_mac));
-
-      if (esp_wifi_nan_send_message(&fup) == ESP_OK)
-          ESP_LOGI(TAG, "Sending message '%s' to Publisher "MACSTR" ...",
-          EXAMPLE_NAN_SVC_MSG, MAC2STR(g_svc_match_evt.pub_if_mac));
-    */
-  }
-}
-
 EventBits_t nan_process_events (struct nan_state *state) {
+  /* Block for 50ms waiting for events */
   EventBits_t bits = xEventGroupWaitBits(
     state->event_group,
     EV_RECEIVE | EV_SERVICE_MATCH | EV_NDP_CONFIRMED | EV_NDP_FAILED,
     pdFALSE,
     pdFALSE,
-    1000 / portTICK_PERIOD_MS // portMAX_DELAY
+    2000 / portTICK_PERIOD_MS // portMAX_DELAY
   );
+  if (!bits) return 0; // No event received, quick return
   ESP_LOGI(TAG, "nan_process_events(status: %s, bits: %lu)", status_str(state->status), (unsigned long) bits);
+
+  /* NAN Peer Aquisition operates within the two discovery modes */
+  if (
+      state->status != SEEK ||
+      state->status != NOTIFY
+  ) {
+    ESP_LOGW(TAG, "Invalid state - event ignored");
+    return 0;
+  }
+
 
   if (bits & EV_RECEIVE) { // TODO: Supported but not used?
     ESP_LOGI(TAG, "Incoming Peer Handshake svc: %i; peer_id: %i", state->pub_id, state->peer_id);
@@ -279,6 +279,23 @@ EventBits_t nan_process_events (struct nan_state *state) {
   else if (bits & EV_SERVICE_MATCH) { // Service match
     ESP_LOGI(TAG, "Service Found");
     xEventGroupClearBits(state->event_group, EV_SERVICE_MATCH);
+
+    /* [Optional] Respond with 64byte followup? */
+    /* Broadcast not used or maybe should to signal latest timestamp;
+     * let publisher decide if worth it to establish datapath or not?
+      wifi_nan_followup_params_t fup = {
+          .inst_id = sub_id,
+          .peer_inst_id = g_svc_match_evt.publish_id,
+          .svc_info = EXAMPLE_NAN_SVC_MSG,
+      };
+      memcpy(fup.peer_mac, g_svc_match_evt.pub_if_mac, sizeof(fup.peer_mac));
+
+      if (esp_wifi_nan_send_message(&fup) == ESP_OK)
+          ESP_LOGI(TAG, "Sending message '%s' to Publisher "MACSTR" ...",
+          EXAMPLE_NAN_SVC_MSG, MAC2STR(g_svc_match_evt.pub_if_mac));
+    */
+
+    /* Initiate Datapath Request */
     wifi_nan_datapath_req_t ndp_req = {0};
     ndp_req.confirm_required = true;
     ndp_req.pub_id = state->svc_match_evt.publish_id;
@@ -295,14 +312,16 @@ EventBits_t nan_process_events (struct nan_state *state) {
     ESP_LOGI(TAG, "NAN Datapath READY");
     ip_addr_t target_addr = {0};
     esp_wifi_nan_get_ipv6_linklocal_from_mac(&target_addr.u_addr.ip6, state->peer_ndi);
+
     if (initiator) {
-      vTaskDelay(2000 / portTICK_PERIOD_MS); // Give non-initiator a headstart
+      // vTaskDelay(2000 / portTICK_PERIOD_MS); // Reference code had a 5-sec delay here.
       ESP_LOGI(TAG, "Connecting to remote peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
+      // TODO: Spawn Independent task to mirror server handler
       rpc_connect(state->esp_netif, &target_addr);
-      state->status = INFORM;
+      // TODO: Move to rpc; state->status = INFORM;
     } else {
       ESP_LOGI(TAG, "Waiting for peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
-      state->status = INFORM;
+      // TODO: Move to rpc; state->status = INFORM;
     }
     // xEventGroupSetBits(state->event_group, REMOTE_PEER_NETIF);
   }
@@ -312,15 +331,14 @@ EventBits_t nan_process_events (struct nan_state *state) {
     ESP_LOGI(TAG, "Failed to setup NAN Datapath");
   }
 
-  // TODO: not sure about this,
   else if (bits) {
-    // have to rethink the event-group later
-    // if goal is to have multiple non-blocking components.
-    // return xEventGroupClearBits(state->event_group, bits); // Clear Unknown Event;
+    ESP_LOGI(TAG, "Unhandled event bits set: %lu", (unsigned long)bits);
+    xEventGroupClearBits(state->event_group, bits);
     return bits;
   }
+
   // vTaskDelay(10);
-  return xEventGroupGetBits(state->event_group);
+  return 0;
 }
 
 /**
@@ -341,22 +359,3 @@ int nan_swap_polarity(struct nan_state *state) {
     return 1;
   }
 }
-
-#ifndef APP_MAIN
-void app_main(void) {
-  struct nan_state state = {0};
-  nan_init(&state);
-  // nan_publish(&state);
-  ESP_LOGI(TAG, "NAN Initialized");
-  nan_subscribe(&state);
-  // int initiator = nan_swap_polarity(&state);
-  loop_events(&state);
-
-  // Dream API?
-  // nan_init();
-  // uint8_t sub_id = nan_join('TOPIC', on_peer_connection_callback);
-  // loop_events().... ?
-  // nan_leave(sub_id)
-  // nan_deinit();
-}
-#endif
