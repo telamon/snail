@@ -1,6 +1,6 @@
-# SNAIL (esp32)
+# SNAIL (on esp32)
 
-- Slow Notes Around Immediate Location
+> Slow Notes Around Immediate Location
 
 Snail is a relayed protocol for unsupervised sneakernet devices.
 This repository contains a full node implemenation that uses Wifi NAN for promiscuous communication
@@ -36,15 +36,16 @@ Optional addons:
 [Sneakernet](https://en.wikipedia.org/wiki/Sneakernet) is the art of transfering data by moving it in physical space without relying on the internet.
 The protocol relies on eventual message delivery within geographical bounds.
 
-A snail node is fully autonomous and transitions between the following 5 states named by color:
-![Fig1. Seek, Notify, Attach, Inform, Leave.](./doc/states.svg)
-(`White`, `Blue`, `Red`, `Purple`, `Green`).
+A snail node is fully autonomous and transitions between the following 5 states:
 
 - `WHITE` wakeup state, cleanup previous peer connections and re-init radios if necessary
 - `RED` Searching for beacons, initiate connections to peers.
 - `BLUE` Broadcast beacons, accept peer connections.
-- `PURPLE` Peer found, establish high-bandwidth connection.
+- `PURPLE` Peer found, establish direct connection.
 - `GREEN` Exchanging messages.
+
+![Fig1. Seek, Notify, Attach, Inform, Leave.](./docs/states.svg)
+
 
 
 **Complete Table of Transitions**
