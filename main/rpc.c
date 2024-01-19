@@ -14,6 +14,7 @@
 #define KEEPALIVE_INTERVAL          KEEPALIVE_IDLE
 #define KEEPALIVE_COUNT             3
 
+#define XF_BUFFER_SIZE 4096
 static struct {
   TaskHandle_t server_task;
   bool listening;
@@ -22,21 +23,76 @@ static struct {
   TaskHandle_t client_task;
   esp_netif_t *netif;
   ip_addr_t *addr;
-  char rx_buffer[4096];
+  char rx_buffer[XF_BUFFER_SIZE];
 } rpc_state;
+
+static int send_msg (int socket, const char *payload) {
+  char *rx_buffer = rpc_state.rx_buffer;
+  const u16_t len = strlen(payload);
+  // TODO: avoid this memcpy
+  memcpy(rx_buffer, &len, sizeof(len));
+  memcpy(rx_buffer + sizeof(len), payload, len);
+
+  // send() can return less bytes than supplied length.
+  // Walk-around for robust implementation.
+  int total = len + sizeof(len);
+  int remain = total;
+  while (remain > 0) {
+    int written = send(socket, rx_buffer + (total - remain), remain, 0);
+    if (written < 0) return written;
+    remain -= written;
+  }
+  ESP_LOGI(RPC, "send_msg(%zu) done (%x, %x)", len + sizeof(len), rx_buffer[0], rx_buffer[1]);
+  return len + sizeof(len);
+}
+// 2, 3, 4, 5, 77, 89, 66;
+static int recv_msg (int socket) {
+  char *rx_buffer = rpc_state.rx_buffer;
+  u16_t msg_len = 0;
+  size_t offset = 0;
+  while (1) {
+    int len = recv(socket, rx_buffer + offset, XF_BUFFER_SIZE - offset - 1, 0);
+    ESP_LOGI(RPC, "recv_msg::recv => %i, offset: %zu", len, offset);
+    if (len < 0) return len;
+
+    /* Wait message size */
+    if (!msg_len) {
+      if (len >= sizeof(u16_t)) {
+        memcpy(&msg_len, rx_buffer, sizeof(u16_t));
+        if (msg_len > XF_BUFFER_SIZE) {
+          ESP_LOGE(RPC, "rxMSG[%i] > rx_buffer[%i] would cause overflow, disconnecting!", msg_len, XF_BUFFER_SIZE);
+          return -1;
+        }
+        ESP_LOGI(RPC, "rxMSG[%i] Incoming message", msg_len);
+      }
+    }
+    offset += len;
+    /* Message size known */
+    if (msg_len) {
+      if (offset > msg_len + sizeof(u16_t)) {
+        ESP_LOGE(RPC, "rx Read overflow, expected (%zu), received (%zu)", msg_len + sizeof(u16_t), offset);
+        return -1;
+      }
+      /* Success */
+      if (offset == msg_len + sizeof(u16_t)) return offset;
+    }
+    delay(10);
+  }
+}
 
 static void initiator_comm (const int sock) {
   char *rx_buffer = rpc_state.rx_buffer;
   const char *payload = "Message from ESP32 ";
   int rounds = 0; // Tmp;
   while (1) {
-    int err = send(sock, payload, strlen(payload), 0);
+    int err = send_msg(sock, payload);
     if (err < 0) {
       ESP_LOGE(RPC, "Error occurred during sending: (%d) %s", errno, lwip_strerr(errno));
       break;
     }
+    delay(50);
 
-    int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
+    int len = recv_msg(sock);
     // Error occurred during receiving
     if (len < 0) {
       ESP_LOGE(RPC, "recv failed: errno (%d) %s", errno, lwip_strerr(errno));
@@ -45,8 +101,8 @@ static void initiator_comm (const int sock) {
     // Data received
     else {
       rx_buffer[len] = 0; // Null-terminate whatever we received and treat like a string
-      ESP_LOGI(RPC, "C: Received %d bytes", len);
-      ESP_LOGI(RPC, "C: %s", rx_buffer);
+      ESP_LOGI(RPC, "C: Received %d bytes, round %i", len, rounds);
+      ESP_LOGI(RPC, "C: %s", rx_buffer + 2);
     }
     if (rounds++ > 10) break;
   }
@@ -57,7 +113,7 @@ static void server_comm(const int sock) {
     char *rx_buffer = rpc_state.rx_buffer;
     int len;
     do {
-        len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
+        len = recv_msg(sock);
         if (len < 0) {
             ESP_LOGE(RPC, "Error occurred during receiving: (%d) %s", errno, lwip_strerr(errno));
         } else if (len == 0) {
@@ -65,22 +121,15 @@ static void server_comm(const int sock) {
         } else {
             rx_buffer[len] = 0; // Null-terminate whatever is received and treat it like a string
             ESP_LOGI(RPC, "S: Received %d bytes: %s", len, rx_buffer);
-            ESP_LOGI(RPC, "S: %s", rx_buffer);
-
-            // send() can return less bytes than supplied length.
-            // Walk-around for robust implementation.
-            int to_write = len;
-            while (to_write > 0) {
-                int written = send(sock, rx_buffer + (len - to_write), to_write, 0);
-                if (written < 0) {
-                    ESP_LOGE(RPC, "Error occurred during sending: (%d) %s", errno, lwip_strerr(errno));
-                    // Failed to retransmit, giving up
-                    return;
-                }
-                to_write -= written;
+            ESP_LOGI(RPC, "S: %s", rx_buffer + 2);
+            // Echo back
+            int n = send_msg(sock, "Gotcha");
+            if (n < 0) {
+              ESP_LOGE(RPC, "S: write error: (%d) %s", n, lwip_strerr(n));
+              return; // Disconnect
             }
         }
-      vTaskDelay(1); // Sleep inbetween messages
+      vTaskDelay(50); // Sleep inbetween messages
     } while (len > 0);
 }
 
@@ -153,15 +202,15 @@ static void tcp_server_task(void *pvParameters) {
         ESP_LOGI(RPC, "Socket accepted ip address: %s", addr_str);
         g_state->status = INFORM;
         server_comm(sock);
-
         shutdown(sock, 0);
         close(sock);
+        g_state->status = LEAVE;
         vTaskDelay(1);
     }
 
 DEINIT:
     close(rpc_state.listen_sock);
-    vTaskDelete(rpc_state.server_task);
+    vTaskDelete(NULL);
     rpc_state.server_task = 0; // Bad idea?
     g_state->status = LEAVE;
 }
@@ -177,7 +226,7 @@ void tcp_client_task(void *pvParameters);
 void rpc_connect(esp_netif_t *netif, ip_addr_t *target) {
   rpc_state.addr = target;
   rpc_state.netif = netif;
-  xTaskCreate(tcp_client_task, "tcp_client", 4096, &client_state, 5, &rpc_state.client_task);
+  xTaskCreate(tcp_client_task, "tcp_client", 4096, &client_state, 10, &rpc_state.client_task);
 }
 
 void tcp_client_task(void *pvParameters) {
@@ -200,12 +249,17 @@ void tcp_client_task(void *pvParameters) {
   dest_addr.sin6_scope_id = esp_netif_get_netif_impl_index(rpc_state.netif);
   ESP_LOGI(RPC, "Interface index: %" PRIu32, dest_addr.sin6_scope_id);
 
-  int err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-  if (err != 0) {
-    ESP_LOGE(RPC, "Socket unable to connect: (%d) %s", errno, lwip_strerr(errno));
-    goto DEINIT;
-  }
+  int errCount = 0;
+  int err = 0;
+
+  do  {
+    err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    if (err != 0) ESP_LOGE(RPC, "Socket unable to connect: (%d) %s", errno, lwip_strerr(errno));
+    if (10 < errCount++) goto DEINIT;
+    vTaskDelay(1000 / portTICK_PERIOD_MS); // Reference code had a 5-sec delay here.
+  } while (err != 0);
   ESP_LOGI(RPC, "Successfully connected");
+
   g_state->status = INFORM;
   initiator_comm(sock);
 
@@ -216,4 +270,6 @@ DEINIT:
     close(sock);
   }
   g_state->status = LEAVE;
+  vTaskDelete(NULL);
+  rpc_state.client_task = 0;
 }

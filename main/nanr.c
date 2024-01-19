@@ -136,7 +136,7 @@ static void nan_service_match_event_handler(
 }
 
 uint8_t nan_subscribe (struct nan_state *state) {
-  if (state->status != CLUSTERING) return -1;
+  if (state->status != CLUSTERING) return -1; // TODO: remove clustering
   // Setup Event Handlers for Service Match & Datapath confirm
   esp_event_handler_instance_t instance_any_id;
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
@@ -257,7 +257,7 @@ EventBits_t nan_process_events (struct nan_state *state) {
 
   /* NAN Peer Aquisition operates within the two discovery modes */
   if (
-      state->status != SEEK ||
+      state->status != SEEK &&
       state->status != NOTIFY
   ) {
     ESP_LOGW(TAG, "Invalid state - event ignored");
@@ -314,12 +314,14 @@ EventBits_t nan_process_events (struct nan_state *state) {
     esp_wifi_nan_get_ipv6_linklocal_from_mac(&target_addr.u_addr.ip6, state->peer_ndi);
 
     if (initiator) {
-      // vTaskDelay(2000 / portTICK_PERIOD_MS); // Reference code had a 5-sec delay here.
+      nan_unsubscribe(state);
+      vTaskDelay(500 / portTICK_PERIOD_MS); // Reference code had a 5-sec delay here.
       ESP_LOGI(TAG, "Connecting to remote peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
       // TODO: Spawn Independent task to mirror server handler
       rpc_connect(state->esp_netif, &target_addr);
       // TODO: Move to rpc; state->status = INFORM;
     } else {
+      nan_unpublish(state);
       ESP_LOGI(TAG, "Waiting for peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
       // TODO: Move to rpc; state->status = INFORM;
     }

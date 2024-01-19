@@ -3,6 +3,7 @@
 #include "freertos/task.h"
 #include "nanr.h"
 #include "esp_log.h"
+#include "esp_random.h"
 // WS2812
 #include "hal/gpio_types.h"
 #include "driver/gpio.h"
@@ -40,7 +41,7 @@ void display_state (struct nan_state *state) {
     // ...
     case SEEK: return set_led(0xff0000);
     case NOTIFY: return set_led(0x0000ff);
-    case ATTACH: return set_led(0x154015);
+    case ATTACH: return set_led(0x9010ff);
     case INFORM: return set_led(0x10ff010);
     case LEAVE: return set_led(0xffffff);
   }
@@ -53,6 +54,9 @@ void APP_ERR (int errcode) {
   // (crashed snails should just reset)
 }
 
+/* The main task drives optional UI
+ * and wifi NAN discovery.
+ */
 void app_main(void) {
   /* Initialization code */
   ESP_LOGI(TAG, "snail.c main()");
@@ -89,11 +93,19 @@ void app_main(void) {
     hold = b;
 
     display_state(&state);
+
+    if (state.status == LEAVE) {
+      // TODO: cleanup datapath + peer
+      state.status = CLUSTERING; // TODO: remove this state?
+      if (esp_random() & 1) nan_subscribe(&state);
+      else nan_publish(&state);
+    }
     APP_ERR(nan_process_events(&state));
 
     /* Clear Display */
     led_strip_clear(led_strip);
-    delay(20);
+    ESP_LOGI(TAG, "free: %zu", heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    delay(200);
 
     if (i > 4) {
       // nan_swap_polarity(&state);
