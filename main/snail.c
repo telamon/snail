@@ -36,14 +36,12 @@ static void set_led (uint32_t rgb) {
 
 void display_state (struct nan_state *state) {
   switch (state->status) {
-    case OFFLINE: return set_led(0x101010);
-    case CLUSTERING: return set_led(0x008080);
-    // ...
-    case SEEK: return set_led(0xff0000);
-    case NOTIFY: return set_led(0x0000ff);
-    case ATTACH: return set_led(0x9010ff);
-    case INFORM: return set_led(0x10ff010);
-    case LEAVE: return set_led(0xffffff);
+    case OFFLINE: return set_led(0x101010); // WHITE
+    case SEEK: return set_led(0xff0000);    // RED
+    case NOTIFY: return set_led(0x0000ff);  // BLUE
+    case ATTACH: return set_led(0x008080);  // TURQ
+    case INFORM: return set_led(0x9010ff);  // PURPLE
+    case LEAVE: return set_led(0x10ff10);   // GREEN
   }
 }
 
@@ -69,9 +67,10 @@ void app_main(void) {
   nan_init(&state);
   display_state(&state);
 
-  // nan_publish(&state);
   ESP_LOGI(TAG, "NAN Initialized");
-  nan_subscribe(&state);
+  /* dev-force startup state */
+  // nan_publish(&state);
+  // nan_subscribe(&state);
   display_state(&state);
 
   /* Hookup button */
@@ -95,8 +94,9 @@ void app_main(void) {
     display_state(&state);
 
     if (state.status == LEAVE) {
+      nan_unpublish(&state);
+      nan_unsubscribe(&state);
       // TODO: cleanup datapath + peer
-      state.status = CLUSTERING; // TODO: remove this state?
       if (esp_random() & 1) nan_subscribe(&state);
       else nan_publish(&state);
     }
@@ -106,10 +106,12 @@ void app_main(void) {
     led_strip_clear(led_strip);
     ESP_LOGI(TAG, "free: %zu", heap_caps_get_free_size(MALLOC_CAP_8BIT));
     delay(200);
-
-    if (i > 4) {
-      // nan_swap_polarity(&state);
-      i = 0;
-    } else i++;
+    if (state.status == SEEK || state.status == NOTIFY) {
+      i++;
+      if (i > 4) {
+        nan_swap_polarity(&state);
+        i = 0;
+      }
+    }
   }
 }

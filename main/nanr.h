@@ -21,7 +21,6 @@
 /* This belongs in snail.h */
 enum nan_peer_status {
   OFFLINE = 0,
-  CLUSTERING = 1, // TODO: Replace with LEAVE
   // Significant ones
   SEEK = 2,
   NOTIFY = 3,

@@ -40,33 +40,38 @@ const char* status_str(enum nan_peer_status s) {
     case INFORM: return "INFORM";
     case LEAVE: return "LEAVE";
     case OFFLINE: return "OFFLIN";
-    case CLUSTERING: return "CLUSTERING";
     default: return "unknown";
   }
 }
 
 
 int nan_unpublish(struct nan_state *state) {
-  if (state->status != NOTIFY) return -1; // NO-OP
+  if (state->pub_id == 0) {
+    ESP_LOGW(TAG, "unecessary nan_unpublish() pub_id is zero");
+    return 0;
+  }
   int res = esp_wifi_nan_cancel_service(state->pub_id);
   ESP_ERROR_CHECK(res);
   if (res == ESP_OK) {
     state->pub_id = 0;
     state->peer_id = 0;
-    state->status = CLUSTERING;
+    state->status = LEAVE;
   }
   return res;
 }
 
 int nan_unsubscribe(struct nan_state *state) {
-  if (state->status != SEEK) return -1; // NO-OP
+  if (state->sub_id == 0) {
+    ESP_LOGW(TAG, "unecessary nan_unsubscribe() sub_id is zero");
+    return 0;
+  }
   int res = esp_wifi_nan_cancel_service(state->sub_id);
   ESP_ERROR_CHECK(res);
   if (res == ESP_OK) {
     state->sub_id = 0;
     memset(&state->peer_ndi, 0, sizeof(state->peer_ndi));
     memset(&state->svc_match_evt, 0, sizeof(state->svc_match_evt));
-    state->status = CLUSTERING;
+    state->status = LEAVE;
   }
   return res;
 }
@@ -136,24 +141,23 @@ static void nan_service_match_event_handler(
 }
 
 uint8_t nan_subscribe (struct nan_state *state) {
-  if (state->status != CLUSTERING) return -1; // TODO: remove clustering
-  // Setup Event Handlers for Service Match & Datapath confirm
-  esp_event_handler_instance_t instance_any_id;
+  /* Register Subscription Event Handlers for Service Match & Datapath confirm */
+  esp_event_handler_instance_t handler_id; // TODO: This should be memoed and freed
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
     WIFI_EVENT,
     WIFI_EVENT_NAN_SVC_MATCH,
     &nan_service_match_event_handler,
     NULL,
-    &instance_any_id
+    &handler_id
   ));
-
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
     WIFI_EVENT,
     WIFI_EVENT_NDP_CONFIRM,
     &nan_ndp_confirmed_event_handler,
     NULL,
-    &instance_any_id
+    &handler_id
   ));
+  if (state->status != LEAVE) return -1; // TODO: remove clustering
   wifi_nan_subscribe_cfg_t config = {
     .service_name = NAN_TOPIC,
     .type = NAN_SUBSCRIBE_PASSIVE,
@@ -170,21 +174,21 @@ uint8_t nan_subscribe (struct nan_state *state) {
 }
 
 uint8_t nan_publish(struct nan_state *state) {
-  if (state->status != CLUSTERING) return -1;
-  esp_event_handler_instance_t instance_any_id;
+  esp_event_handler_instance_t handler_id; // TODO: This should be memoed and freed
+  /* Register Publish Event handlers*/
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
     WIFI_EVENT,
     WIFI_EVENT_NAN_RECEIVE,
     &nan_receive_event_handler,
     NULL,
-    &instance_any_id
+    &handler_id
   ));
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
     WIFI_EVENT,
     WIFI_EVENT_NDP_INDICATION,
     &nan_ndp_indication_event_handler,
     NULL,
-    &instance_any_id
+    &handler_id
   ));
 
   /* ndp_require_consent
@@ -234,13 +238,13 @@ void nan_init(struct nan_state *state) {
   // ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
   // ESP_ERROR_CHECK(esp_wifi_start());
 
-  /* Start NAN Discovery */
+  /* Start NAN Clustering */
   wifi_nan_config_t nan_cfg = WIFI_NAN_CONFIG_DEFAULT();
   state->esp_netif = esp_netif_create_default_wifi_nan();
   ESP_ERROR_CHECK(esp_wifi_nan_start(&nan_cfg));
-  state->status = CLUSTERING;
   g_state = state; // Leak state
-  rpc_listen();
+  rpc_listen(); // Start tcp-server task
+  state->status = LEAVE;
 }
 
 EventBits_t nan_process_events (struct nan_state *state) {
@@ -314,16 +318,13 @@ EventBits_t nan_process_events (struct nan_state *state) {
     esp_wifi_nan_get_ipv6_linklocal_from_mac(&target_addr.u_addr.ip6, state->peer_ndi);
 
     if (initiator) {
-      nan_unsubscribe(state);
-      vTaskDelay(500 / portTICK_PERIOD_MS); // Reference code had a 5-sec delay here.
+      // nan_unsubscribe(state);
+      // vTaskDelay(500 / portTICK_PERIOD_MS); // Reference code had a 5-sec delay here.
       ESP_LOGI(TAG, "Connecting to remote peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
-      // TODO: Spawn Independent task to mirror server handler
       rpc_connect(state->esp_netif, &target_addr);
-      // TODO: Move to rpc; state->status = INFORM;
     } else {
-      nan_unpublish(state);
+      // nan_unpublish(state);
       ESP_LOGI(TAG, "Waiting for peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
-      // TODO: Move to rpc; state->status = INFORM;
     }
     // xEventGroupSetBits(state->event_group, REMOTE_PEER_NETIF);
   }

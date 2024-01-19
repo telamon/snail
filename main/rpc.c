@@ -42,41 +42,46 @@ static int send_msg (int socket, const char *payload) {
     if (written < 0) return written;
     remain -= written;
   }
-  ESP_LOGI(RPC, "send_msg(%zu) done (%x, %x)", len + sizeof(len), rx_buffer[0], rx_buffer[1]);
+  ESP_LOGI(RPC, "send_msg(%zu) done", len + sizeof(len));
   return len + sizeof(len);
 }
-// 2, 3, 4, 5, 77, 89, 66;
+
 static int recv_msg (int socket) {
   char *rx_buffer = rpc_state.rx_buffer;
   u16_t msg_len = 0;
   size_t offset = 0;
   while (1) {
     int len = recv(socket, rx_buffer + offset, XF_BUFFER_SIZE - offset - 1, 0);
-    ESP_LOGI(RPC, "recv_msg::recv => %i, offset: %zu", len, offset);
+    // ESP_LOGI(RPC, "recv_msg::recv => %i, offset: %zu", len, offset);
     if (len < 0) return len;
-
+    if (len == 0) {
+      delay(20);
+      continue;
+    }
     /* Wait message size */
-    if (!msg_len) {
-      if (len >= sizeof(u16_t)) {
-        memcpy(&msg_len, rx_buffer, sizeof(u16_t));
-        if (msg_len > XF_BUFFER_SIZE) {
-          ESP_LOGE(RPC, "rxMSG[%i] > rx_buffer[%i] would cause overflow, disconnecting!", msg_len, XF_BUFFER_SIZE);
-          return -1;
-        }
-        ESP_LOGI(RPC, "rxMSG[%i] Incoming message", msg_len);
+    if (!msg_len && offset + len >= sizeof(u16_t)) {
+      memcpy(&msg_len, rx_buffer, sizeof(u16_t));
+      // ESP_LOGI(RPC, "rxMSG[%i] Incoming message", msg_len);
+      if (msg_len > XF_BUFFER_SIZE) {
+        ESP_LOGE(RPC, "rxMSG[%i] > rx_buffer[%i] would cause overflow, disconnecting!", msg_len, XF_BUFFER_SIZE);
+        return -1;
       }
     }
+
     offset += len;
-    /* Message size known */
+
+    /* Check read finished */
     if (msg_len) {
       if (offset > msg_len + sizeof(u16_t)) {
         ESP_LOGE(RPC, "rx Read overflow, expected (%zu), received (%zu)", msg_len + sizeof(u16_t), offset);
         return -1;
       }
       /* Success */
-      if (offset == msg_len + sizeof(u16_t)) return offset;
+      if (offset == msg_len + sizeof(u16_t)) {
+        ESP_LOGI(RPC, "recv_msg(%zu) done", offset);
+        return offset;
+      }
     }
-    delay(10);
   }
 }
 
