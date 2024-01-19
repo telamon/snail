@@ -210,6 +210,7 @@ static void tcp_server_task(void *pvParameters) {
         shutdown(sock, 0);
         close(sock);
         g_state->status = LEAVE;
+        xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
         vTaskDelay(1);
     }
 
@@ -217,7 +218,6 @@ DEINIT:
     close(rpc_state.listen_sock);
     vTaskDelete(NULL);
     rpc_state.server_task = 0; // Bad idea?
-    g_state->status = LEAVE;
 }
 
 void rpc_listen () {
@@ -275,6 +275,7 @@ DEINIT:
     close(sock);
   }
   g_state->status = LEAVE;
+  xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
   vTaskDelete(NULL);
   rpc_state.client_task = 0;
 }

@@ -25,6 +25,7 @@
 #include "esp_mac.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "lwip/ip6_addr.h"
 #include "nvs_flash.h"
 
@@ -69,7 +70,6 @@ int nan_unsubscribe(struct nan_state *state) {
   ESP_ERROR_CHECK(res);
   if (res == ESP_OK) {
     state->sub_id = 0;
-    memset(&state->peer_ndi, 0, sizeof(state->peer_ndi));
     memset(&state->svc_match_evt, 0, sizeof(state->svc_match_evt));
     state->status = LEAVE;
   }
@@ -123,7 +123,8 @@ static void nan_ndp_confirmed_event_handler(
       xEventGroupSetBits(g_state->event_group, EV_NDP_FAILED);
   } else {
       // TODO: memcpy entire event?
-      memcpy(g_state->peer_ndi, evt->peer_ndi, sizeof(g_state->peer_ndi)); // stash NAN Data Interface MAC
+      memcpy(&g_state->ev_ndp_up, evt, sizeof(wifi_event_ndp_confirm_t));
+      // memcpy(g_state->peer_ndi, evt->peer_ndi, sizeof(g_state->peer_ndi)); // stash NAN Data Interface MAC
       xEventGroupSetBits(g_state->event_group, EV_NDP_CONFIRMED);
   }
 }
@@ -251,7 +252,7 @@ EventBits_t nan_process_events (struct nan_state *state) {
   /* Block for 50ms waiting for events */
   EventBits_t bits = xEventGroupWaitBits(
     state->event_group,
-    EV_RECEIVE | EV_SERVICE_MATCH | EV_NDP_CONFIRMED | EV_NDP_FAILED,
+    EV_RECEIVE | EV_SERVICE_MATCH | EV_NDP_CONFIRMED | EV_NDP_FAILED | EV_NDP_DEINIT,
     pdFALSE,
     pdFALSE,
     2000 / portTICK_PERIOD_MS // portMAX_DELAY
@@ -259,12 +260,13 @@ EventBits_t nan_process_events (struct nan_state *state) {
   if (!bits) return 0; // No event received, quick return
   ESP_LOGI(TAG, "nan_process_events(status: %s, bits: %lu)", status_str(state->status), (unsigned long) bits);
 
-  /* NAN Peer Aquisition operates within the two discovery modes */
+  /* Block new peers while busy */
   if (
       state->status != SEEK &&
-      state->status != NOTIFY
+      state->status != NOTIFY &&
+      state->status != LEAVE
   ) {
-    ESP_LOGW(TAG, "Invalid state - event ignored");
+    ESP_LOGW(TAG, "Invalid state - event ignored %lu", (unsigned long) bits);
     return 0;
   }
 
@@ -315,7 +317,7 @@ EventBits_t nan_process_events (struct nan_state *state) {
     state->status = ATTACH;
     ESP_LOGI(TAG, "NAN Datapath READY");
     ip_addr_t target_addr = {0};
-    esp_wifi_nan_get_ipv6_linklocal_from_mac(&target_addr.u_addr.ip6, state->peer_ndi);
+    esp_wifi_nan_get_ipv6_linklocal_from_mac(&target_addr.u_addr.ip6, state->ev_ndp_up.peer_ndi);
 
     if (initiator) {
       // nan_unsubscribe(state);
@@ -332,6 +334,23 @@ EventBits_t nan_process_events (struct nan_state *state) {
   else if (bits & EV_NDP_FAILED) {
     xEventGroupClearBits(state->event_group, EV_NDP_FAILED);
     ESP_LOGI(TAG, "Failed to setup NAN Datapath");
+  }
+
+  else if (bits & EV_NDP_DEINIT) {
+    xEventGroupClearBits(state->event_group, EV_NDP_DEINIT);
+    /* nan_datapath_end */
+    wifi_nan_datapath_end_req_t end_req = {0};
+    end_req.ndp_id = state->ev_ndp_up.ndp_id;
+    memcpy(&end_req.peer_mac, &state->ev_ndp_up.peer_ndi, sizeof(end_req.peer_mac));
+    int res = esp_wifi_nan_datapath_end(&end_req);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(res); // Log if success, other end might already have closed.
+    memset(&state->ev_ndp_up, 0, sizeof(state->ev_ndp_up));
+    /* Unsub and Unpub */
+    nan_unpublish(state);
+    nan_unsubscribe(state);
+    /* re-roll re-enter */
+    if (esp_random() & 1) nan_subscribe(state);
+    else nan_publish(state);
   }
 
   else if (bits) {

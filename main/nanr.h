@@ -17,6 +17,7 @@
 #define EV_SERVICE_MATCH BIT1
 #define EV_NDP_CONFIRMED BIT2
 #define EV_NDP_FAILED BIT3
+#define EV_NDP_DEINIT BIT4
 
 /* This belongs in snail.h */
 enum nan_peer_status {
@@ -39,7 +40,8 @@ struct nan_state {
   // Sub state
   uint8_t sub_id; // Subscribed Service id
   wifi_event_nan_svc_match_t svc_match_evt; // Matched Service info
-  uint8_t peer_ndi[6]; // MAC of DataPathed Peer / TODO: replace with remote_peer event
+  wifi_event_ndp_confirm_t ev_ndp_up;
+  // uint8_t peer_ndi[6]; // MAC of DataPathed Peer / TODO: replace with remote_peer event
 
   /* ip addr */
 };

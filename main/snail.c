@@ -71,6 +71,8 @@ void app_main(void) {
   /* dev-force startup state */
   // nan_publish(&state);
   // nan_subscribe(&state);
+  if (esp_random() & 1) nan_subscribe(&state);
+  else nan_publish(&state);
   display_state(&state);
 
   /* Hookup button */
@@ -93,13 +95,6 @@ void app_main(void) {
 
     display_state(&state);
 
-    if (state.status == LEAVE) {
-      nan_unpublish(&state);
-      nan_unsubscribe(&state);
-      // TODO: cleanup datapath + peer
-      if (esp_random() & 1) nan_subscribe(&state);
-      else nan_publish(&state);
-    }
     APP_ERR(nan_process_events(&state));
 
     /* Clear Display */
