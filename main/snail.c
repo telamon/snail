@@ -8,6 +8,7 @@
 #include "hal/gpio_types.h"
 #include "driver/gpio.h"
 #include "led_strip.h"
+#include "math.h"
 
 #define TAG "snail.c"
 
@@ -37,8 +38,11 @@ static void init_display(void) {
 
 
 void display_state (struct nan_state *state) {
+  const TickType_t seed = xTaskGetTickCount();
+  uint16_t sun = sin(M_PI * 2 * ((seed & 0xff) / 255.0)) * 0xff;
   switch (state->status) {
     case SEEK:
+      /*
       for (int i = 0; i < 0xff; i++) {
         led_strip_set_pixel_hsv(led_strip, 0, 360, 0xff, i);
         ESP_ERROR_CHECK(led_strip_refresh(led_strip));
@@ -46,6 +50,8 @@ void display_state (struct nan_state *state) {
         delay(5);
       }
       delay(300);
+      */
+      set_led((sun & 0xff) << 16);
       break;
 
     case NOTIFY:
@@ -108,7 +114,7 @@ void app_main(void) {
       int res = nan_swap_polarity(&state);
       if (res == -1) set_led(0xff0000); // Fail
       else set_led(0x00ff00); // success
-      delay(50);
+      delay(150);
     }
     hold = b;
 
