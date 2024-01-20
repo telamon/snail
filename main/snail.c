@@ -36,54 +36,71 @@ static void init_display(void) {
   set_led(0x121212);
 }
 
+#define BW(s, w) (((s) % (w)) / ((float)w))
 
 void display_state (struct nan_state *state) {
   const TickType_t seed = xTaskGetTickCount();
-  uint16_t sun = sin(M_PI * 2 * ((seed & 0xff) / 255.0)) * 0xff;
+
+  if (true || state->status == ATTACH) {
+    const uint16_t duration = 5000 / portTICK_PERIOD_MS; // 5000ms
+    const float sw = 0.70; // Stabilize at @ three quarters
+    const float t0 = BW(seed, duration); // 0->1 in duration
+    if (t0 < sw) {
+      const float acc = 1 - pow(t0, 3);
+      const float t1 = BW(seed, (int)(acc * (duration * sw)) + 1);
+      int f = sin(M_PI * 2 * t1) * 0x80;
+      led_strip_set_pixel(led_strip, 0, 0x80 + f, 0 , 0x80 - f);
+    } else {
+      const float t2 = BW(seed, (int)(duration * (1 - sw) / 3));
+      int f = (1 + sin(M_PI * 2 * t2) / 2) * 0x30;
+      led_strip_set_pixel(led_strip, 0, 0x80 + f, 10, 0x80 + f);
+    }
+    ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+    return;
+  }
+
   switch (state->status) {
     case SEEK:
-      /*
-      for (int i = 0; i < 0xff; i++) {
-        led_strip_set_pixel_hsv(led_strip, 0, 360, 0xff, i);
-        ESP_ERROR_CHECK(led_strip_refresh(led_strip));
-        set_led(0xff0000);
-        delay(5);
-      }
-      delay(300);
-      */
-      set_led((sun & 0xff) << 16);
+    case ATTACH:
       break;
+      /*
+         for (int i = 0; i < 0xff; i++) {
+         led_strip_set_pixel_hsv(led_strip, 0, 360, 0xff, i);
+         ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+         set_led(0xff0000);
+         delay(5);
+         }
+         delay(300);
+         */
+      /*set_led((sun & 0xff) << 16);*/
+      /*break;*/
 
     case NOTIFY:
-     set_led(0x0000ff);
-     delay(100);
-     led_strip_clear(led_strip);
-     delay(50);
-     set_led(0x0000ff);
-     delay(200);
-     led_strip_clear(led_strip);
-     delay(900);
-     break;
+      set_led(0x0000ff);
+      delay(100);
+      led_strip_clear(led_strip);
+      delay(50);
+      set_led(0x0000ff);
+      delay(200);
+      led_strip_clear(led_strip);
+      delay(900);
+      break;
 
-    case ATTACH:
-     set_led(0x9010ff);  // PURPLE
-     delay(100);
-     break;
 
     case INFORM:
-     set_led(0x10ff10);   // GREEN
-     delay(100);
-     break;
+      set_led(0x10ff10);   // GREEN
+      delay(100);
+      break;
 
     case LEAVE:
     case OFFLINE:
-     for (int i = 0; i < 0xff; i++) {
-       set_led((i << 16) | (i << 8) | i); // WHITE
-       delay(10);
-     }
-     led_strip_clear(led_strip);
-     delay(500);
-     break;
+      for (int i = 0; i < 0xff; i++) {
+        set_led((i << 16) | (i << 8) | i); // WHITE
+        delay(10);
+      }
+      led_strip_clear(led_strip);
+      delay(500);
+      break;
   }
 }
 #endif
@@ -119,11 +136,10 @@ void app_main(void) {
     hold = b;
 
     display_state(&state);
-    delay(10);
     // ESP_LOGI(TAG, "free: %zu", heap_caps_get_free_size(MALLOC_CAP_8BIT));
     if (false && (state.status == SEEK || state.status == NOTIFY)) {
-      uint32_t r = esp_random() & 0xff; // Force drift/desync
-      if (xTaskGetTickCount() - mode_start - r> 10000 / portTICK_PERIOD_MS) {
+      uint32_t r = esp_random() & 0x1ff; // Force drift/desync
+      if (xTaskGetTickCount() - mode_start - r > 10000 / portTICK_PERIOD_MS) {
         nan_swap_polarity(&state);
         mode_start = xTaskGetTickCount();
       }
