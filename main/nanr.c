@@ -6,14 +6,6 @@
 /*
  * nanr.c
  * Neighbour Aware Network Relay
- Usage:
-    void app_main(void) {
-      struct nan_state state = {0};
-      nan_init(&state);
-      // nan_publish(&state);
-      nan_subscribe(&state);
-      while (1) nan_process_events(&state);
-    }
  */
 #include "nanr.h"
 #include <string.h>
@@ -142,23 +134,10 @@ static void nan_service_match_event_handler(
 }
 
 uint8_t nan_subscribe (struct nan_state *state) {
-  /* Register Subscription Event Handlers for Service Match & Datapath confirm */
-  esp_event_handler_instance_t handler_id; // TODO: This should be memoed and freed
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-    WIFI_EVENT,
-    WIFI_EVENT_NAN_SVC_MATCH,
-    &nan_service_match_event_handler,
-    NULL,
-    &handler_id
-  ));
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-    WIFI_EVENT,
-    WIFI_EVENT_NDP_CONFIRM,
-    &nan_ndp_confirmed_event_handler,
-    NULL,
-    &handler_id
-  ));
-  if (state->status != LEAVE) return -1; // TODO: remove clustering
+  if (state->sub_id) {
+    ESP_LOGW(TAG, "nan_subscribe() Already subscribed! %i", state->sub_id);
+    return state->sub_id;
+  }
   wifi_nan_subscribe_cfg_t config = {
     .service_name = NAN_TOPIC,
     .type = NAN_SUBSCRIBE_PASSIVE,
@@ -175,23 +154,10 @@ uint8_t nan_subscribe (struct nan_state *state) {
 }
 
 uint8_t nan_publish(struct nan_state *state) {
-  esp_event_handler_instance_t handler_id; // TODO: This should be memoed and freed
-  /* Register Publish Event handlers*/
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-    WIFI_EVENT,
-    WIFI_EVENT_NAN_RECEIVE,
-    &nan_receive_event_handler,
-    NULL,
-    &handler_id
-  ));
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-    WIFI_EVENT,
-    WIFI_EVENT_NDP_INDICATION,
-    &nan_ndp_indication_event_handler,
-    NULL,
-    &handler_id
-  ));
-
+  if (state->pub_id) {
+    ESP_LOGW(TAG, "nan_publish() Already published! %i", state->pub_id);
+    return state->pub_id;
+  }
   /* ndp_require_consent
    * If set to false - All incoming NDP requests will be internally accepted if valid.
    * If set to true - All incoming NDP requests raise NDP_INDICATION event, upon which application can either accept or reject them.
@@ -217,62 +183,103 @@ uint8_t nan_publish(struct nan_state *state) {
 }
 
 void nan_init(struct nan_state *state) {
-  if (state->status != OFFLINE) return;
-  // Initialized event-group/'private emitter'/bus
+  /* create event group */
   state->event_group = xEventGroupCreate();
 
-  // Initialize NVS - What does this do?
+  /*/ Initialize NVS - What does this do? */
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_ERROR_CHECK(nvs_flash_erase());
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
-  // Initialize Wifi
+
+  /* Initialize Wifi / netif*/
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM) );
 
-  // Maybe redundant due esp_wifi_nan_start()
-  // ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
-  // ESP_ERROR_CHECK(esp_wifi_start());
-
   /* Start NAN Clustering */
   wifi_nan_config_t nan_cfg = WIFI_NAN_CONFIG_DEFAULT();
   state->esp_netif = esp_netif_create_default_wifi_nan();
   ESP_ERROR_CHECK(esp_wifi_nan_start(&nan_cfg));
-  g_state = state; // Leak state
+
+  /* Register Subscription Event Handlers for Service Match & Datapath confirm */
+  esp_event_handler_instance_t handler_id; // TODO: This should be memoed and freed
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(
+    WIFI_EVENT,
+    WIFI_EVENT_NAN_SVC_MATCH,
+    &nan_service_match_event_handler,
+    NULL,
+    &handler_id
+  ));
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(
+    WIFI_EVENT,
+    WIFI_EVENT_NDP_CONFIRM,
+    &nan_ndp_confirmed_event_handler,
+    NULL,
+    &handler_id
+  ));
+
+  /* Register Publish Event handlers*/
+  //esp_event_handler_instance_t handler_id;
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(
+    WIFI_EVENT,
+    WIFI_EVENT_NAN_RECEIVE,
+    &nan_receive_event_handler,
+    NULL,
+    &handler_id
+  ));
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(
+    WIFI_EVENT,
+    WIFI_EVENT_NDP_INDICATION,
+    &nan_ndp_indication_event_handler,
+    NULL,
+    &handler_id
+  ));
+
+
   rpc_listen(); // Start tcp-server task
   state->status = LEAVE;
+  g_state = state; // Leak state
 }
 
-EventBits_t nan_process_events (struct nan_state *state) {
+int nan_ndp_deinit(struct nan_state *state) {
+  wifi_nan_datapath_end_req_t end_req = {0};
+  end_req.ndp_id = state->ev_ndp_up.ndp_id;
+  memcpy(&end_req.peer_mac, &state->ev_ndp_up.peer_ndi, sizeof(end_req.peer_mac));
+  int res = esp_wifi_nan_datapath_end(&end_req);
+  ESP_ERROR_CHECK_WITHOUT_ABORT(res); // Log if success, other end might already have closed.
+  memset(&state->ev_ndp_up, 0, sizeof(state->ev_ndp_up));
+  return res;
+}
+
+void nan_reroll(struct nan_state *state) {
+  ESP_LOGI(TAG, "Rolling state [%i, %i]", state->pub_id, state->sub_id);
+  /* Auto unsub/unpub */
+  if (state->pub_id != 0) nan_unpublish(state);
+  if (state->sub_id != 0) nan_unsubscribe(state);
+  /* re-roll re-enter */
+  if (esp_random() & 1) nan_subscribe(state);
+  else nan_publish(state);
+}
+
+int nan_process_events (struct nan_state *state) {
   /* Block for 50ms waiting for events */
   EventBits_t bits = xEventGroupWaitBits(
     state->event_group,
     EV_RECEIVE | EV_SERVICE_MATCH | EV_NDP_CONFIRMED | EV_NDP_FAILED | EV_NDP_DEINIT,
     pdFALSE,
     pdFALSE,
-    2000 / portTICK_PERIOD_MS // portMAX_DELAY
+    portMAX_DELAY
   );
-  if (!bits) return 0; // No event received, quick return
+  if (!bits) return ESP_OK; // No event received, quick return
   ESP_LOGI(TAG, "nan_process_events(status: %s, bits: %lu)", status_str(state->status), (unsigned long) bits);
 
-  /* Block new peers while busy */
-  if (
-      state->status != SEEK &&
-      state->status != NOTIFY &&
-      state->status != LEAVE
-  ) {
-    ESP_LOGW(TAG, "Invalid state - event ignored %lu", (unsigned long) bits);
-    return 0;
-  }
-
-
   if (bits & EV_RECEIVE) { // TODO: Supported but not used?
-    ESP_LOGI(TAG, "Incoming Peer Handshake svc: %i; peer_id: %i", state->pub_id, state->peer_id);
+    ESP_LOGI(TAG, "[EV_RECEIVE] Incoming Peer Handshake svc: %i; peer_id: %i", state->pub_id, state->peer_id);
     xEventGroupClearBits(state->event_group, EV_RECEIVE);
     wifi_nan_followup_params_t fup = {0};
     fup.inst_id = state->pub_id;
@@ -283,8 +290,13 @@ EventBits_t nan_process_events (struct nan_state *state) {
   }
 
   else if (bits & EV_SERVICE_MATCH) { // Service match
-    ESP_LOGI(TAG, "Service Found");
     xEventGroupClearBits(state->event_group, EV_SERVICE_MATCH);
+    if (state->status == SEEK) {
+      ESP_LOGI(TAG, "[EV_SERVICE_MATCH] Service Found");
+    } else {
+      ESP_LOGW(TAG, "[EV_SERVICE_MATCH] Ignored during %s-state", status_str(state->status));
+      return ESP_OK;
+    }
 
     /* [Optional] Respond with 64byte followup? */
     /* Broadcast not used or maybe should to signal latest timestamp;
@@ -313,54 +325,59 @@ EventBits_t nan_process_events (struct nan_state *state) {
 
   else if (bits & EV_NDP_CONFIRMED) {
     xEventGroupClearBits(state->event_group, EV_NDP_CONFIRMED);
+    if (state->status == SEEK || state->status == NOTIFY) {
+      ESP_LOGI(TAG, "[EV_NDP_CONFIRMED] NAN Datapath READY");
+    } else {
+      ESP_LOGW(TAG, "[EV_NDP_CONFIRMED] Ignored during %s-state", status_str(state->status));
+      return ESP_OK;
+    }
+
     bool initiator = state->status == SEEK;
     state->status = ATTACH;
-    ESP_LOGI(TAG, "NAN Datapath READY");
     ip_addr_t target_addr = {0};
     esp_wifi_nan_get_ipv6_linklocal_from_mac(&target_addr.u_addr.ip6, state->ev_ndp_up.peer_ndi);
 
     if (initiator) {
       // nan_unsubscribe(state);
-      // vTaskDelay(500 / portTICK_PERIOD_MS); // Reference code had a 5-sec delay here.
       ESP_LOGI(TAG, "Connecting to remote peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
-      rpc_connect(state->esp_netif, &target_addr);
+      delay(100); // Reference code had big delay here.
+      int res = rpc_connect(state->esp_netif, &target_addr);
+      if (res != ESP_OK) xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
     } else {
       // nan_unpublish(state);
       ESP_LOGI(TAG, "Waiting for peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
+      delay(4000);
+      if (state->status != INFORM) {
+        ESP_LOGI(TAG, "No call... terminating ndp");
+        xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
+      }
     }
-    // xEventGroupSetBits(state->event_group, REMOTE_PEER_NETIF);
   }
 
   else if (bits & EV_NDP_FAILED) {
+    ESP_LOGI(TAG, "[EV_NDP_FAILED] Failed to setup NAN Datapath");
     xEventGroupClearBits(state->event_group, EV_NDP_FAILED);
-    ESP_LOGI(TAG, "Failed to setup NAN Datapath");
+    xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
   }
 
   else if (bits & EV_NDP_DEINIT) {
+    ESP_LOGI(TAG, "[EV_NDP_DEINIT] Closing datapath");
     xEventGroupClearBits(state->event_group, EV_NDP_DEINIT);
-    /* nan_datapath_end */
-    wifi_nan_datapath_end_req_t end_req = {0};
-    end_req.ndp_id = state->ev_ndp_up.ndp_id;
-    memcpy(&end_req.peer_mac, &state->ev_ndp_up.peer_ndi, sizeof(end_req.peer_mac));
-    int res = esp_wifi_nan_datapath_end(&end_req);
-    ESP_ERROR_CHECK_WITHOUT_ABORT(res); // Log if success, other end might already have closed.
-    memset(&state->ev_ndp_up, 0, sizeof(state->ev_ndp_up));
+    g_state->status = LEAVE;
+    nan_ndp_deinit(state);
     /* Unsub and Unpub */
     nan_unpublish(state);
     nan_unsubscribe(state);
-    /* re-roll re-enter */
-    if (esp_random() & 1) nan_subscribe(state);
-    else nan_publish(state);
+    delay(500);
+    nan_reroll(state);
   }
 
   else if (bits) {
-    ESP_LOGI(TAG, "Unhandled event bits set: %lu", (unsigned long)bits);
+    ESP_LOGE(TAG, "[UNKNOWN EVENT] bits: %lu", (unsigned long)bits);
     xEventGroupClearBits(state->event_group, bits);
-    return bits;
+    abort();
   }
-
-  // vTaskDelay(10);
-  return 0;
+  return ESP_OK;
 }
 
 /**
@@ -368,16 +385,39 @@ EventBits_t nan_process_events (struct nan_state *state) {
  * @returns 0: Publisher, 1: Subscriber, -1: Error
  */
 int nan_swap_polarity(struct nan_state *state) {
-  if (state->pub_id != 0 && state->sub_id != 0) {
-    ESP_LOGI(TAG, "Impossible state pub_id: %i, sub_id: %i", state->pub_id, state->sub_id);
-    return -1;
-  } else if (state->pub_id != 0) {
+  if (state->pub_id != 0) {
     nan_unpublish(state);
     nan_subscribe(state);
-    return 0;
-  } else {
+  } else if (state->sub_id != 0) {
     nan_unsubscribe(state);
     nan_publish(state);
-    return 1;
+  } else {
+    nan_reroll(state); // Random
   }
+  return ESP_OK;
 }
+
+void nan_discovery_task(void *pvParameter) {
+  struct nan_state *state = pvParameter;
+  nan_init(state);
+  ESP_LOGI(TAG, "NAN Initialized");
+  /* dev-force startup state */
+  // nan_publish(&state);
+  nan_subscribe(state);
+  // nan_reroll(state);
+
+  while (nan_process_events(state) == ESP_OK);
+
+// DEINIT:
+  nan_unpublish(state);
+  nan_unsubscribe(state);
+  nan_ndp_deinit(state);
+  vEventGroupDelete(state->event_group);
+  ESP_ERROR_CHECK(esp_wifi_nan_stop());
+}
+
+void nan_discovery_start(struct nan_state *state) {
+  // if (state->discovery_task != 0) xEventGroupSetBits(g_state->event_group, EV_DISCOVERY_EXIT);
+  xTaskCreate(nan_discovery_task, "nan_discovery", 4096, state, 3, &state->discovery_task);
+}
+

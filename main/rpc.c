@@ -53,11 +53,7 @@ static int recv_msg (int socket) {
   while (1) {
     int len = recv(socket, rx_buffer + offset, XF_BUFFER_SIZE - offset - 1, 0);
     // ESP_LOGI(RPC, "recv_msg::recv => %i, offset: %zu", len, offset);
-    if (len < 0) return len;
-    if (len == 0) {
-      delay(20);
-      continue;
-    }
+    if (len < 1) return len;
     /* Wait message size */
     if (!msg_len && offset + len >= sizeof(u16_t)) {
       memcpy(&msg_len, rx_buffer, sizeof(u16_t));
@@ -102,6 +98,9 @@ static void initiator_comm (const int sock) {
     if (len < 0) {
       ESP_LOGE(RPC, "recv failed: errno (%d) %s", errno, lwip_strerr(errno));
       break;
+    } else if (len == 0) {
+      ESP_LOGI(RPC, "Connection closed by remote");
+      break;
     }
     // Data received
     else {
@@ -122,7 +121,7 @@ static void server_comm(const int sock) {
         if (len < 0) {
             ESP_LOGE(RPC, "Error occurred during receiving: (%d) %s", errno, lwip_strerr(errno));
         } else if (len == 0) {
-            ESP_LOGW(RPC, "Connection closed");
+            ESP_LOGW(RPC, "Connection closed by remote");
         } else {
             rx_buffer[len] = 0; // Null-terminate whatever is received and treat it like a string
             ESP_LOGI(RPC, "S: Received %d bytes: %s", len, rx_buffer);
@@ -194,30 +193,31 @@ static void tcp_server_task(void *pvParameters) {
             ESP_LOGE(RPC, "Unable to accept connection: (%d) %s", errno, lwip_strerr(errno));
             break;
         }
-
+        g_state->status = INFORM;
         // Set tcp keepalive option
         setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(int));
         setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &keepIdle, sizeof(int));
         setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &keepInterval, sizeof(int));
         setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keepCount, sizeof(int));
+        struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         // Convert ip address to string
         if (source_addr.ss_family == PF_INET6) {
             inet6_ntoa_r(((struct sockaddr_in6 *)&source_addr)->sin6_addr, addr_str, sizeof(addr_str) - 1);
         }
+
         ESP_LOGI(RPC, "Socket accepted ip address: %s", addr_str);
-        g_state->status = INFORM;
         server_comm(sock);
         shutdown(sock, 0);
         close(sock);
-        g_state->status = LEAVE;
         xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
         vTaskDelay(1);
     }
 
 DEINIT:
     close(rpc_state.listen_sock);
-    vTaskDelete(NULL);
     rpc_state.server_task = 0; // Bad idea?
+    vTaskDelete(NULL);
 }
 
 void rpc_listen () {
@@ -228,10 +228,21 @@ static struct client_target {
 
 
 void tcp_client_task(void *pvParameters);
-void rpc_connect(esp_netif_t *netif, ip_addr_t *target) {
+int rpc_connect(esp_netif_t *netif, ip_addr_t *target) {
+  if (rpc_state.client_task != 0) {
+    eTaskState s = eTaskGetState(rpc_state.client_task);
+    if (s != eDeleted && s != eInvalid) {
+      ESP_LOGW(RPC, "rpc_connect() will attempt to delete previous task (%i)", s);
+      vTaskDelete(rpc_state.client_task); // Attempt to delete it
+      delay(100);
+      s = eTaskGetState(rpc_state.client_task);
+      if (s != eDeleted && s != eInvalid) return -1;
+    }
+  }
   rpc_state.addr = target;
   rpc_state.netif = netif;
   xTaskCreate(tcp_client_task, "tcp_client", 4096, &client_state, 10, &rpc_state.client_task);
+  return 0;
 }
 
 void tcp_client_task(void *pvParameters) {
@@ -263,9 +274,13 @@ void tcp_client_task(void *pvParameters) {
     if (10 < errCount++) goto DEINIT;
     vTaskDelay(1000 / portTICK_PERIOD_MS); // Reference code had a 5-sec delay here.
   } while (err != 0);
-  ESP_LOGI(RPC, "Successfully connected");
 
+  ESP_LOGI(RPC, "Successfully connected");
   g_state->status = INFORM;
+
+  struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
   initiator_comm(sock);
 
 DEINIT:
@@ -274,8 +289,7 @@ DEINIT:
     shutdown(sock, 0);
     close(sock);
   }
-  g_state->status = LEAVE;
   xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
-  vTaskDelete(NULL);
   rpc_state.client_task = 0;
+  vTaskDelete(NULL);
 }

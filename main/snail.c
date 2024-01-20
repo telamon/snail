@@ -13,9 +13,14 @@
 
 #define BTN GPIO_NUM_39
 
+#define DISPLAY_LED
+#ifdef DISPLAY_LED
 static led_strip_handle_t led_strip;
-
-static void configure_led(void) {
+static void set_led (uint32_t rgb) {
+  led_strip_set_pixel(led_strip, 0, (rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
+  ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+}
+static void init_display(void) {
   /* LED strip initialization with the GPIO and pixels number*/
   led_strip_config_t strip_config = {
       .strip_gpio_num = 27,
@@ -27,30 +32,55 @@ static void configure_led(void) {
   };
   ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
   led_strip_clear(led_strip);
+  set_led(0x121212);
 }
 
-static void set_led (uint32_t rgb) {
-  led_strip_set_pixel(led_strip, 0, (rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
-  ESP_ERROR_CHECK(led_strip_refresh(led_strip));
-}
 
 void display_state (struct nan_state *state) {
   switch (state->status) {
-    case OFFLINE: return set_led(0x101010); // WHITE
-    case SEEK: return set_led(0xff0000);    // RED
-    case NOTIFY: return set_led(0x0000ff);  // BLUE
-    case ATTACH: return set_led(0x008080);  // TURQ
-    case INFORM: return set_led(0x9010ff);  // PURPLE
-    case LEAVE: return set_led(0x10ff10);   // GREEN
+    case SEEK:
+      for (int i = 0; i < 0xff; i++) {
+        led_strip_set_pixel_hsv(led_strip, 0, 360, 0xff, i);
+        ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+        set_led(0xff0000);
+        delay(5);
+      }
+      delay(300);
+      break;
+
+    case NOTIFY:
+     set_led(0x0000ff);
+     delay(100);
+     led_strip_clear(led_strip);
+     delay(50);
+     set_led(0x0000ff);
+     delay(200);
+     led_strip_clear(led_strip);
+     delay(900);
+     break;
+
+    case ATTACH:
+     set_led(0x9010ff);  // PURPLE
+     delay(100);
+     break;
+
+    case INFORM:
+     set_led(0x10ff10);   // GREEN
+     delay(100);
+     break;
+
+    case LEAVE:
+    case OFFLINE:
+     for (int i = 0; i < 0xff; i++) {
+       set_led((i << 16) | (i << 8) | i); // WHITE
+       delay(10);
+     }
+     led_strip_clear(led_strip);
+     delay(500);
+     break;
   }
 }
-
-void APP_ERR (int errcode) {
-  // 1. Error check without abort()
-  // 2. stick into error state
-  // 3. optionally reboot after 5 sec.
-  // (crashed snails should just reset)
-}
+#endif
 
 /* The main task drives optional UI
  * and wifi NAN discovery.
@@ -58,22 +88,11 @@ void APP_ERR (int errcode) {
 void app_main(void) {
   /* Initialization code */
   ESP_LOGI(TAG, "snail.c main()");
-
-  configure_led();
-  set_led(0x121212);
+  init_display();
 
   struct nan_state state = {0};
   display_state(&state);
-  nan_init(&state);
-  display_state(&state);
-
-  ESP_LOGI(TAG, "NAN Initialized");
-  /* dev-force startup state */
-  // nan_publish(&state);
-  // nan_subscribe(&state);
-  if (esp_random() & 1) nan_subscribe(&state);
-  else nan_publish(&state);
-  display_state(&state);
+  nan_discovery_start(&state);
 
   /* Hookup button */
   ESP_ERROR_CHECK(gpio_set_direction(BTN, GPIO_MODE_INPUT));
@@ -81,7 +100,7 @@ void app_main(void) {
   // ESP_ERROR_CHECK(gpio_intr_enable(BTN));
 
   int hold = gpio_get_level(BTN);
-  int i = 0;
+  TickType_t mode_start = xTaskGetTickCount();
   while (1) {
     int b = gpio_get_level(BTN); // TODO: attempt interrupts
     if (hold != b && !b) {
@@ -94,18 +113,13 @@ void app_main(void) {
     hold = b;
 
     display_state(&state);
-
-    APP_ERR(nan_process_events(&state));
-
-    /* Clear Display */
-    led_strip_clear(led_strip);
-    ESP_LOGI(TAG, "free: %zu", heap_caps_get_free_size(MALLOC_CAP_8BIT));
-    delay(200);
-    if (state.status == SEEK || state.status == NOTIFY) {
-      i++;
-      if (i > 4) {
+    delay(10);
+    // ESP_LOGI(TAG, "free: %zu", heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    if (false && (state.status == SEEK || state.status == NOTIFY)) {
+      uint32_t r = esp_random() & 0xff; // Force drift/desync
+      if (xTaskGetTickCount() - mode_start - r> 10000 / portTICK_PERIOD_MS) {
         nan_swap_polarity(&state);
-        i = 0;
+        mode_start = xTaskGetTickCount();
       }
     }
   }
