@@ -37,43 +37,48 @@ static void init_display(void) {
 }
 
 #define BW(s, w) (((s) % (w)) / ((float)w))
+#define SUBDIV(s, n) fmod((s) * (n), 1)
 
 void display_state (struct nan_state *state) {
   const TickType_t seed = xTaskGetTickCount();
+  /* Global Animation Duration */
+  const uint16_t duration = 5000 / portTICK_PERIOD_MS;
+  /* Timer 0: (0.0 to 1.0 in duration millis) */
+  const float t0 = BW(seed, duration);
+  if (true) {
+    if (t0 < 0.75) {
+      const float t1 = SUBDIV(t0, 8);
+      const float f = sin(M_PI * 2 * t1) * 20;
+      led_strip_set_pixel_hsv(led_strip, 0, 360 + f, 0xff, 0x80);
+      ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+    } else led_strip_clear(led_strip);
+    return;
+  }
 
-  if (true || state->status == ATTACH) {
-    const uint16_t duration = 5000 / portTICK_PERIOD_MS; // 5000ms
-    const float sw = 0.70; // Stabilize at @ three quarters
-    const float t0 = BW(seed, duration); // 0->1 in duration
-    if (t0 < sw) {
-      const float acc = 1 - pow(t0, 3);
-      const float t1 = BW(seed, (int)(acc * (duration * sw)) + 1);
-      int f = sin(M_PI * 2 * t1) * 0x80;
-      led_strip_set_pixel(led_strip, 0, 0x80 + f, 0 , 0x80 - f);
-    } else {
-      const float t2 = BW(seed, (int)(duration * (1 - sw) / 3));
-      int f = (1 + sin(M_PI * 2 * t2) / 2) * 0x30;
-      led_strip_set_pixel(led_strip, 0, 0x80 + f, 10, 0x80 + f);
-    }
-    ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+  if (true) {
+    const float t1 = SUBDIV(t0, 8);
     return;
   }
 
   switch (state->status) {
+    case ATTACH: {
+      const float sw = 0.70; // Stabilize at @ three quarters
+      if (t0 < sw) {
+       const float acc = 1 - pow(t0, 3);
+       const float t1 = BW(seed, (int)(acc * (duration * sw)) + 1);
+       int f = sin(M_PI * 2 * t1) * 0x80;
+       led_strip_set_pixel(led_strip, 0, 0x80 + f, 0 , 0x80 - f);
+      } else {
+       const float t2 = BW(seed, (int)(duration * (1 - sw) / 3));
+       int f = (1 + sin(M_PI * 2 * t2) / 2) * 0x30;
+       led_strip_set_pixel(led_strip, 0, 0x80 + f, 10, 0x80 + f);
+      }
+      ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+      return;
+    }
+
     case SEEK:
-    case ATTACH:
       break;
-      /*
-         for (int i = 0; i < 0xff; i++) {
-         led_strip_set_pixel_hsv(led_strip, 0, 360, 0xff, i);
-         ESP_ERROR_CHECK(led_strip_refresh(led_strip));
-         set_led(0xff0000);
-         delay(5);
-         }
-         delay(300);
-         */
-      /*set_led((sun & 0xff) << 16);*/
-      /*break;*/
 
     case NOTIFY:
       set_led(0x0000ff);
