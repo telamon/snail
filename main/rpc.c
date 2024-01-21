@@ -7,15 +7,17 @@
 #include "lwip/sys.h"
 #include <lwip/netdb.h>
 #define RPC "rpc.c"
-#define PORT                        1337
+#define PORT                        1984
 // IDLE = seconds idle to send heartbeat, INTERVAL = seconds between heartbeats.
 // COUNT = N-fails to connection reset.
-#define KEEPALIVE_IDLE              2
+#define KEEPALIVE_IDLE              3
 #define KEEPALIVE_INTERVAL          KEEPALIVE_IDLE
 #define KEEPALIVE_COUNT             3
 
+#define EV_RPC_PEER_SOCKET BIT1
 #define XF_BUFFER_SIZE 4096
 static struct {
+  EventGroupHandle_t event_group;
   TaskHandle_t server_task;
   bool listening;
   int listen_sock;
@@ -88,7 +90,7 @@ static void initiator_comm (const int sock) {
   while (1) {
     int err = send_msg(sock, payload);
     if (err < 0) {
-      ESP_LOGE(RPC, "Error occurred during sending: (%d) %s", errno, lwip_strerr(errno));
+      ESP_LOGE(RPC, "C: socket write error: (%d) %s", errno, lwip_strerr(errno));
       break;
     }
     delay(50);
@@ -96,10 +98,10 @@ static void initiator_comm (const int sock) {
     int len = recv_msg(sock);
     // Error occurred during receiving
     if (len < 0) {
-      ESP_LOGE(RPC, "recv failed: errno (%d) %s", errno, lwip_strerr(errno));
+      ESP_LOGE(RPC, "C: socket read error (%d) %s", errno, lwip_strerr(errno));
       break;
     } else if (len == 0) {
-      ESP_LOGI(RPC, "Connection closed by remote");
+      ESP_LOGI(RPC, "C: Connection closed by remote");
       break;
     }
     // Data received
@@ -119,9 +121,9 @@ static void server_comm(const int sock) {
     do {
         len = recv_msg(sock);
         if (len < 0) {
-            ESP_LOGE(RPC, "Error occurred during receiving: (%d) %s", errno, lwip_strerr(errno));
+            ESP_LOGE(RPC, "S: socket read error: (%d) %s", errno, lwip_strerr(errno));
         } else if (len == 0) {
-            ESP_LOGW(RPC, "Connection closed by remote");
+            ESP_LOGW(RPC, "S: Connection closed by remote");
         } else {
             rx_buffer[len] = 0; // Null-terminate whatever is received and treat it like a string
             ESP_LOGI(RPC, "S: Received %d bytes: %s", len, rx_buffer);
@@ -129,7 +131,7 @@ static void server_comm(const int sock) {
             // Echo back
             int n = send_msg(sock, "Gotcha");
             if (n < 0) {
-              ESP_LOGE(RPC, "S: write error: (%d) %s", n, lwip_strerr(n));
+              ESP_LOGE(RPC, "S: socket write error: (%d) %s", n, lwip_strerr(n));
               return; // Disconnect
             }
         }
@@ -185,7 +187,7 @@ static void tcp_server_task(void *pvParameters) {
     }
     rpc_state.listening = true;
     while (rpc_state.listening) {
-        ESP_LOGI(RPC, "Socket listening");
+        ESP_LOGI(RPC, "blocking task with accept()");
         struct sockaddr_storage source_addr; // Large enough for both IPv4 or IPv6
         socklen_t addr_len = sizeof(source_addr);
         int sock = accept(rpc_state.listen_sock, (struct sockaddr *)&source_addr, &addr_len);
@@ -193,7 +195,9 @@ static void tcp_server_task(void *pvParameters) {
             ESP_LOGE(RPC, "Unable to accept connection: (%d) %s", errno, lwip_strerr(errno));
             break;
         }
-        g_state->status = INFORM;
+        xEventGroupSetBits(rpc_state.event_group, EV_RPC_PEER_SOCKET);
+        // g_state->status = INFORM;
+
         // Set tcp keepalive option
         setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(int));
         setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &keepIdle, sizeof(int));
@@ -221,11 +225,9 @@ DEINIT:
 }
 
 void rpc_listen () {
+  rpc_state.event_group = xEventGroupCreate();
   xTaskCreate(tcp_server_task, "tcp_server", 4096, (void*)AF_INET6, 5, &rpc_state.server_task);
 }
-static struct client_target {
-} client_state;
-
 
 void tcp_client_task(void *pvParameters);
 int rpc_connect(esp_netif_t *netif, ip_addr_t *target) {
@@ -241,7 +243,7 @@ int rpc_connect(esp_netif_t *netif, ip_addr_t *target) {
   }
   rpc_state.addr = target;
   rpc_state.netif = netif;
-  xTaskCreate(tcp_client_task, "tcp_client", 4096, &client_state, 10, &rpc_state.client_task);
+  xTaskCreate(tcp_client_task, "tcp_client", 4096, NULL, 10, &rpc_state.client_task);
   return 0;
 }
 
@@ -272,14 +274,14 @@ void tcp_client_task(void *pvParameters) {
     err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
     if (err != 0) ESP_LOGE(RPC, "Socket unable to connect: (%d) %s", errno, lwip_strerr(errno));
     if (10 < errCount++) goto DEINIT;
-    vTaskDelay(1000 / portTICK_PERIOD_MS); // Reference code had a 5-sec delay here.
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
   } while (err != 0);
-
-  ESP_LOGI(RPC, "Successfully connected");
-  g_state->status = INFORM;
 
   struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
   setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+  ESP_LOGI(RPC, "Successfully connected");
+  xEventGroupSetBits(rpc_state.event_group, EV_RPC_PEER_SOCKET);
 
   initiator_comm(sock);
 
@@ -292,4 +294,11 @@ DEINIT:
   xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
   rpc_state.client_task = 0;
   vTaskDelete(NULL);
+}
+
+static int rpc_wait_for_peer_socket(TickType_t t) {
+  EventBits_t bits = xEventGroupWaitBits(rpc_state.event_group, EV_RPC_PEER_SOCKET, pdFALSE, pdFALSE, t);
+  xEventGroupClearBits(rpc_state.event_group, EV_RPC_PEER_SOCKET);
+  if (bits & EV_RPC_PEER_SOCKET) return 0;
+  else return -1;
 }

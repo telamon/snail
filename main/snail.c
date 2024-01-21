@@ -83,7 +83,8 @@ void display_state (struct nan_state *state) {
     }
     case LEAVE:
     case OFFLINE: {
-      const float i = pow(1 - fmod(t0 * 4, 1), 2) * 0xff;
+      // const float i = pow(1 - fmod(t0 * 4, 1), 2) * 0xff;
+      const uint8_t i = 0x40; // Can't appreciate chaos without order
       led_strip_set_pixel(led_strip, 0, i, i, i);
       ESP_ERROR_CHECK(led_strip_refresh(led_strip));
       return;
@@ -124,12 +125,15 @@ void app_main(void) {
 
     display_state(&state);
     // ESP_LOGI(TAG, "free: %zu", heap_caps_get_free_size(MALLOC_CAP_8BIT));
-    if (false && (state.status == SEEK || state.status == NOTIFY)) {
-      uint32_t r = esp_random() & 0x1ff; // Force drift/desync
-      if (xTaskGetTickCount() - mode_start - r > 10000 / portTICK_PERIOD_MS) {
-        nan_swap_polarity(&state);
+    if ((state.status == SEEK || state.status == NOTIFY)) {
+      uint32_t r = esp_random() ; // Force drift/desync
+      const uint16_t delta = xTaskGetTickCount() - mode_start;
+      if (delta > (7000 + (r & 2047)) / portTICK_PERIOD_MS) {
         mode_start = xTaskGetTickCount();
+        // ESP_LOGW(TAG, "SWAPPING POLARITY %i, r: %08lx", delta, r);
+        nan_swap_polarity(&state);
       }
     }
+    delay(5);
   }
 }

@@ -94,10 +94,12 @@ static void nan_ndp_indication_event_handler(
   wifi_event_ndp_indication_t *evt = (wifi_event_ndp_indication_t *)event_data;
   ESP_LOGI(TAG, "recv: ndp_indication_ev{ id: %i, peer: "MACSTR" }", evt->ndp_id, MAC2STR(evt->peer_nmi));
   wifi_nan_datapath_resp_t ndp_resp = {0};
-  ndp_resp.accept = true; /* Accept incoming datapath request */
+  bool accept = g_state->status == NOTIFY;
+  ndp_resp.accept = accept; /* Accept incoming datapath request */
   ndp_resp.ndp_id = evt->ndp_id;
   memcpy(ndp_resp.peer_mac, evt->peer_nmi, 6);
   esp_wifi_nan_datapath_resp(&ndp_resp);
+  ESP_LOGI(TAG, "datapath-response, accept: %i, [%s]", accept, status_str(g_state->status));
 }
 
 /* This handler get's triggered on both ends
@@ -183,28 +185,32 @@ uint8_t nan_publish(struct nan_state *state) {
 }
 
 void nan_init(struct nan_state *state) {
-  /* create event group */
-  state->event_group = xEventGroupCreate();
-
-  /*/ Initialize NVS - What does this do? */
+#define COWABUNGA
+#ifndef COWABUNGA
+  /* Initialize NVS - What does this do? */
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_ERROR_CHECK(nvs_flash_erase());
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
+#endif
 
   /* Initialize Wifi / netif*/
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  cfg.nvs_enable = false;
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM) );
 
   /* Start NAN Clustering */
-  wifi_nan_config_t nan_cfg = WIFI_NAN_CONFIG_DEFAULT();
   state->esp_netif = esp_netif_create_default_wifi_nan();
+  wifi_nan_config_t nan_cfg = WIFI_NAN_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_nan_start(&nan_cfg));
+
+  /* create event group */
+  state->event_group = xEventGroupCreate();
 
   /* Register Subscription Event Handlers for Service Match & Datapath confirm */
   esp_event_handler_instance_t handler_id; // TODO: This should be memoed and freed
@@ -251,7 +257,7 @@ int nan_ndp_deinit(struct nan_state *state) {
   end_req.ndp_id = state->ev_ndp_up.ndp_id;
   memcpy(&end_req.peer_mac, &state->ev_ndp_up.peer_ndi, sizeof(end_req.peer_mac));
   int res = esp_wifi_nan_datapath_end(&end_req);
-  ESP_ERROR_CHECK_WITHOUT_ABORT(res); // Log if success, other end might already have closed.
+  ESP_LOGW(TAG, "NDP deinitalized: %i", res);
   memset(&state->ev_ndp_up, 0, sizeof(state->ev_ndp_up));
   return res;
 }
@@ -264,6 +270,31 @@ void nan_reroll(struct nan_state *state) {
   /* re-roll re-enter */
   if (esp_random() & 1) nan_subscribe(state);
   else nan_publish(state);
+}
+
+esp_err_t nan_restart(struct nan_state *state) {
+  /* I Hate to say it but restarting 
+   * the entire piece is the most stable way of doing
+   * NAN Communication atm. 
+   */
+  esp_restart();
+  /* ATTEMPT 1 */
+  nan_ndp_deinit(state);
+  delay(500);
+  nan_reroll(state);
+  /*
+  ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_nan_stop());
+  wifi_nan_config_t nan_cfg = WIFI_NAN_CONFIG_DEFAULT();
+  state->pub_id = 0;
+  state->sub_id = 0;
+  state->peer_id = 0;
+  memset(&state->svc_match_evt, 0, sizeof(state->svc_match_evt));
+  memset(&state->ev_ndp_up, 0, sizeof(state->ev_ndp_up));
+  esp_err_t res = esp_wifi_nan_start(&nan_cfg);
+  if (res != ESP_OK) return res;
+  nan_reroll(state);
+  */
+  return ESP_OK;
 }
 
 int nan_process_events (struct nan_state *state) {
@@ -291,7 +322,7 @@ int nan_process_events (struct nan_state *state) {
 
   else if (bits & EV_SERVICE_MATCH) { // Service match
     xEventGroupClearBits(state->event_group, EV_SERVICE_MATCH);
-    if (state->status == SEEK) {
+    if (state->status == SEEK || state->status == NOTIFY) {
       ESP_LOGI(TAG, "[EV_SERVICE_MATCH] Service Found");
     } else {
       ESP_LOGW(TAG, "[EV_SERVICE_MATCH] Ignored during %s-state", status_str(state->status));
@@ -340,22 +371,28 @@ int nan_process_events (struct nan_state *state) {
     if (initiator) {
       // nan_unsubscribe(state);
       ESP_LOGI(TAG, "Connecting to remote peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
-      delay(100); // Reference code had big delay here.
+      // delay(100); // Reference code had big delay here.
       int res = rpc_connect(state->esp_netif, &target_addr);
-      if (res != ESP_OK) xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
+      if (res != ESP_OK) {
+        xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
+        return ESP_OK;
+      }
     } else {
       // nan_unpublish(state);
       ESP_LOGI(TAG, "Waiting for peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
-      delay(4000);
-      if (state->status != INFORM) {
-        ESP_LOGI(TAG, "No call... terminating ndp");
-        xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
-      }
+    }
+    int res = rpc_wait_for_peer_socket(7000 / portTICK_PERIOD_MS);
+    if (res == 0) {
+      ESP_LOGI(TAG, "Changing state [%s] => [INFORM]", status_str(state->status));
+      state->status = INFORM;
+    } else {
+      ESP_LOGE(TAG, "No call... terminating ndp");
+      xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
     }
   }
 
   else if (bits & EV_NDP_FAILED) {
-    ESP_LOGI(TAG, "[EV_NDP_FAILED] Failed to setup NAN Datapath");
+    ESP_LOGE(TAG, "[EV_NDP_FAILED] Failed to setup NAN Datapath");
     xEventGroupClearBits(state->event_group, EV_NDP_FAILED);
     xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
   }
@@ -364,12 +401,7 @@ int nan_process_events (struct nan_state *state) {
     ESP_LOGI(TAG, "[EV_NDP_DEINIT] Closing datapath");
     xEventGroupClearBits(state->event_group, EV_NDP_DEINIT);
     g_state->status = LEAVE;
-    nan_ndp_deinit(state);
-    /* Unsub and Unpub */
-    nan_unpublish(state);
-    nan_unsubscribe(state);
-    delay(500);
-    nan_reroll(state);
+    ESP_ERROR_CHECK(nan_restart(state));
   }
 
   else if (bits) {
@@ -385,15 +417,20 @@ int nan_process_events (struct nan_state *state) {
  * @returns 0: Publisher, 1: Subscriber, -1: Error
  */
 int nan_swap_polarity(struct nan_state *state) {
-  if (state->pub_id != 0) {
-    nan_unpublish(state);
-    nan_subscribe(state);
-  } else if (state->sub_id != 0) {
-    nan_unsubscribe(state);
-    nan_publish(state);
-  } else {
-    nan_reroll(state); // Random
-  }
+  const int s = state->pub_id ? 1 : state->sub_id ? -1 : 0;
+  switch (s) {
+      case 1:
+        nan_unpublish(state);
+        nan_subscribe(state);
+        break;
+      case -1:
+        nan_unsubscribe(state);
+        nan_publish(state);
+        break;
+      case 0:
+        nan_reroll(state);
+        break;
+    }
   return ESP_OK;
 }
 
