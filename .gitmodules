@@ -1,0 +1,6 @@
+[submodule "main/negentropy"]
+	path = main/negentropy
+	url = https://github.com/telamon/negentropy.git
+[submodule "main/sha2"]
+	path = main/sha2
+	url = https://github.com/amosnier/sha-2.git

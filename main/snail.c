@@ -53,24 +53,24 @@ void display_state (struct nan_state *state) {
       ESP_ERROR_CHECK(led_strip_refresh(led_strip));
       return;
     }
+    case NOTIFY: {
+      const float f = sin(M_PI * 2 * fmod(t0 * 4, 1));
+      led_strip_set_pixel(led_strip, 0, 0, 0 , f * pow(t0, 3) * 0xff);
+      ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+      return;
+    }
     case ATTACH: {
       const float sw = 0.70; // Stabilize at @ three quarters
       if (t0 < sw) {
        const float acc = 1 - pow(t0, 3);
        const float t1 = BW(seed, (int)(acc * (duration * sw)) + 1);
-       int f = sin(M_PI * 2 * t1) * 0x80;
+       int f = sin(M_PI * 2 * t1) * 0x40;
        led_strip_set_pixel(led_strip, 0, 0x80 + f, 0 , 0x80 - f);
       } else {
        const float t2 = BW(seed, (int)(duration * (1 - sw) / 3));
        int f = (1 + sin(M_PI * 2 * t2) / 2) * 0x30;
        led_strip_set_pixel(led_strip, 0, 0x80 + f, 10, 0x80 + f);
       }
-      ESP_ERROR_CHECK(led_strip_refresh(led_strip));
-      return;
-    }
-    case NOTIFY: {
-      const float f = sin(M_PI * 2 * fmod(t0 * 4, 1));
-      led_strip_set_pixel(led_strip, 0, 0, 0 , f * pow(t0, 3) * 0xff);
       ESP_ERROR_CHECK(led_strip_refresh(led_strip));
       return;
     }
@@ -111,15 +111,23 @@ void app_main(void) {
   // ESP_ERROR_CHECK(gpio_intr_enable(BTN));
 
   int hold = gpio_get_level(BTN);
+  TickType_t pressedAt = 000000000;
   TickType_t mode_start = xTaskGetTickCount();
   while (1) {
     int b = gpio_get_level(BTN); // TODO: attempt interrupts
-    if (hold != b && !b) {
-      set_led(0x121212);
-      int res = nan_swap_polarity(&state);
-      if (res == -1) set_led(0xff0000); // Fail
-      else set_led(0x00ff00); // success
-      delay(150);
+    if (hold != b) {
+      if (!b) pressedAt = xTaskGetTickCount();
+      else {
+        uint16_t holdTime = xTaskGetTickCount() - pressedAt;
+        if (holdTime > 100) { // Long Press
+          nan_unpublish(&state);
+          nan_unsubscribe(&state);
+        } else {
+          nan_swap_polarity(&state);
+        }
+        ESP_LOGW(TAG, "Button was held %i", holdTime);
+        delay(150);
+      }
     }
     hold = b;
 
@@ -128,7 +136,7 @@ void app_main(void) {
     if ((state.status == SEEK || state.status == NOTIFY)) {
       uint32_t r = esp_random() ; // Force drift/desync
       const uint16_t delta = xTaskGetTickCount() - mode_start;
-      if (delta > (7000 + (r & 2047)) / portTICK_PERIOD_MS) {
+      if (delta > (8000 + (r & 2047)) / portTICK_PERIOD_MS) {
         mode_start = xTaskGetTickCount();
         // ESP_LOGW(TAG, "SWAPPING POLARITY %i, r: %08lx", delta, r);
         nan_swap_polarity(&state);

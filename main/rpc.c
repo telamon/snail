@@ -6,16 +6,17 @@
 #include "lwip/sockets.h"
 #include "lwip/sys.h"
 #include <lwip/netdb.h>
+#include "repo.h"
 #define RPC "rpc.c"
 #define PORT                        1984
 // IDLE = seconds idle to send heartbeat, INTERVAL = seconds between heartbeats.
 // COUNT = N-fails to connection reset.
-#define KEEPALIVE_IDLE              3
+#define KEEPALIVE_IDLE              6
 #define KEEPALIVE_INTERVAL          KEEPALIVE_IDLE
 #define KEEPALIVE_COUNT             3
 
 #define EV_RPC_PEER_SOCKET BIT1
-#define XF_BUFFER_SIZE 4096
+#define XF_BUFFER_SIZE 5000
 static struct {
   EventGroupHandle_t event_group;
   TaskHandle_t server_task;
@@ -28,13 +29,9 @@ static struct {
   char rx_buffer[XF_BUFFER_SIZE];
 } rpc_state;
 
-static int send_msg (int socket, const char *payload) {
+static int send_msg_hacky (int socket, u16_t len) {
   char *rx_buffer = rpc_state.rx_buffer;
-  const u16_t len = strlen(payload);
-  // TODO: avoid this memcpy
   memcpy(rx_buffer, &len, sizeof(len));
-  memcpy(rx_buffer + sizeof(len), payload, len);
-
   // send() can return less bytes than supplied length.
   // Walk-around for robust implementation.
   int total = len + sizeof(len);
@@ -47,6 +44,15 @@ static int send_msg (int socket, const char *payload) {
   ESP_LOGI(RPC, "send_msg(%zu) done", len + sizeof(len));
   return len + sizeof(len);
 }
+
+static int send_msg (int socket, const char *payload) {
+  char *rx_buffer = rpc_state.rx_buffer;
+  const u16_t len = strlen(payload);
+  memcpy(rx_buffer, &len, sizeof(len));
+  memcpy(rx_buffer + sizeof(len), payload, len);
+  return send_msg_hacky(socket, len);
+}
+
 
 static int recv_msg (int socket) {
   char *rx_buffer = rpc_state.rx_buffer;
@@ -77,18 +83,19 @@ static int recv_msg (int socket) {
       /* Success */
       if (offset == msg_len + sizeof(u16_t)) {
         ESP_LOGI(RPC, "recv_msg(%zu) done", offset);
-        return offset;
+        return msg_len; // offset;
       }
     }
   }
 }
 
 static void initiator_comm (const int sock) {
-  char *rx_buffer = rpc_state.rx_buffer;
-  const char *payload = "Message from ESP32 ";
-  int rounds = 0; // Tmp;
+  char* rx_buffer = rpc_state.rx_buffer;
+  u16_t reply_size = XF_BUFFER_SIZE - 2;
+  struct ngn_state* n = ngn_init(true, rx_buffer + 2, &reply_size);
   while (1) {
-    int err = send_msg(sock, payload);
+    ESP_LOGI(RPC, "C: Sending %d bytes", reply_size);
+    int err = send_msg_hacky(sock, reply_size);
     if (err < 0) {
       ESP_LOGE(RPC, "C: socket write error: (%d) %s", errno, lwip_strerr(errno));
       break;
@@ -106,17 +113,27 @@ static void initiator_comm (const int sock) {
     }
     // Data received
     else {
-      rx_buffer[len] = 0; // Null-terminate whatever we received and treat like a string
-      ESP_LOGI(RPC, "C: Received %d bytes, round %i", len, rounds);
-      ESP_LOGI(RPC, "C: %s", rx_buffer + 2);
+      ESP_LOGI(RPC, "C: Received %d bytes", len);
+      // ESP_LOG_BUFFER_HEXDUMP(RPC, rx_buffer, len + 2, ESP_LOG_INFO);
+      /*rx_buffer[len] = 0; // Null-terminate whatever we received and treat like a string*/
+      /*ESP_LOGI(RPC, "C: %s", rx_buffer + 2);*/
+      int rs = ngn_reconcile(n, len);
+      if (rs < 0) {
+        ESP_LOGE(RPC, "Reconcilliation Error: %i", reply_size);
+      }
+      else if (rs == 0) break;
+      else reply_size = rs;
     }
-    if (rounds++ > 10) break;
   }
+
+  ngn_deinit(n);
 }
 
 /* not sure why static */
 static void server_comm(const int sock) {
     char *rx_buffer = rpc_state.rx_buffer;
+    u16_t reply_size = XF_BUFFER_SIZE - 2;
+    struct ngn_state* n = ngn_init(false, rx_buffer + 2, &reply_size);
     int len;
     do {
         len = recv_msg(sock);
@@ -125,11 +142,18 @@ static void server_comm(const int sock) {
         } else if (len == 0) {
             ESP_LOGW(RPC, "S: Connection closed by remote");
         } else {
-            rx_buffer[len] = 0; // Null-terminate whatever is received and treat it like a string
-            ESP_LOGI(RPC, "S: Received %d bytes: %s", len, rx_buffer);
-            ESP_LOGI(RPC, "S: %s", rx_buffer + 2);
-            // Echo back
-            int n = send_msg(sock, "Gotcha");
+            ESP_LOGI(RPC, "S: Received %d bytes", len);
+            // ESP_LOG_BUFFER_HEXDUMP(RPC, rx_buffer, len + 2, ESP_LOG_INFO);
+            /*rx_buffer[len] = 0; // Null-terminate whatever is received and treat it like a string*/
+            /*ESP_LOGI(RPC, "S: %s", rx_buffer + 2);*/
+            int rs = ngn_reconcile(n, len);
+            if (rs < 0) {
+              ESP_LOGE(RPC, "Reconcilliation Error: %i", reply_size);
+            }
+            else if (rs == 0) break; // Recon complete
+
+            ESP_LOGI(RPC, "C: Sending %d bytes", reply_size);
+            int n = send_msg_hacky(sock, rs);
             if (n < 0) {
               ESP_LOGE(RPC, "S: socket write error: (%d) %s", n, lwip_strerr(n));
               return; // Disconnect
@@ -137,6 +161,8 @@ static void server_comm(const int sock) {
         }
       vTaskDelay(50); // Sleep inbetween messages
     } while (len > 0);
+
+    ngn_deinit(n);
 }
 
 

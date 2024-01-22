@@ -381,7 +381,7 @@ int nan_process_events (struct nan_state *state) {
       // nan_unpublish(state);
       ESP_LOGI(TAG, "Waiting for peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
     }
-    int res = rpc_wait_for_peer_socket(7000 / portTICK_PERIOD_MS);
+    int res = rpc_wait_for_peer_socket(8000 / portTICK_PERIOD_MS);
     if (res == 0) {
       ESP_LOGI(TAG, "Changing state [%s] => [INFORM]", status_str(state->status));
       state->status = INFORM;
@@ -394,6 +394,7 @@ int nan_process_events (struct nan_state *state) {
   else if (bits & EV_NDP_FAILED) {
     ESP_LOGE(TAG, "[EV_NDP_FAILED] Failed to setup NAN Datapath");
     xEventGroupClearBits(state->event_group, EV_NDP_FAILED);
+    // nan_reroll(state);
     xEventGroupSetBits(g_state->event_group, EV_NDP_DEINIT);
   }
 
