@@ -29,9 +29,24 @@ static struct {
   char rx_buffer[XF_BUFFER_SIZE];
 } rpc_state;
 
-static int send_msg_hacky (int socket, u16_t len) {
+struct tlv_header {
+  u8_t type;
+  u16_t length;
+};
+enum CMD_TYPE {
+  INVALID = 0,
+  RECON,
+  BLOCK_REQ,
+  BLOCK
+};
+
+static int dispatch_preloaded (int socket, u8_t type, u16_t len) {
   char *rx_buffer = rpc_state.rx_buffer;
-  memcpy(rx_buffer, &len, sizeof(len));
+  struct tlv_header* hdr = (void*)rx_buffer;
+  hdr->type = type;
+  hdr->length= len;
+
+  // memcpy(rx_buffer, &len, sizeof(len));
   // send() can return less bytes than supplied length.
   // Walk-around for robust implementation.
   int total = len + sizeof(len);
@@ -45,45 +60,40 @@ static int send_msg_hacky (int socket, u16_t len) {
   return len + sizeof(len);
 }
 
-static int send_msg (int socket, const char *payload) {
+static int send_msg (int socket, u8_t type, const char *payload) {
   char *rx_buffer = rpc_state.rx_buffer;
   const u16_t len = strlen(payload);
-  memcpy(rx_buffer, &len, sizeof(len));
-  memcpy(rx_buffer + sizeof(len), payload, len);
-  return send_msg_hacky(socket, len);
+  memcpy(rx_buffer + sizeof(struct tlv_header), payload, len);
+  return dispatch_preloaded(socket, type, len);
 }
 
 
 static int recv_msg (int socket) {
   char *rx_buffer = rpc_state.rx_buffer;
-  u16_t msg_len = 0;
+  struct tlv_header* hdr = (void*)rx_buffer;
+  hdr->type = 0;
+  hdr->length = 0;
   size_t offset = 0;
   while (1) {
     int len = recv(socket, rx_buffer + offset, XF_BUFFER_SIZE - offset - 1, 0);
     // ESP_LOGI(RPC, "recv_msg::recv => %i, offset: %zu", len, offset);
-    if (len < 1) return len;
-    /* Wait message size */
-    if (!msg_len && offset + len >= sizeof(u16_t)) {
-      memcpy(&msg_len, rx_buffer, sizeof(u16_t));
-      // ESP_LOGI(RPC, "rxMSG[%i] Incoming message", msg_len);
-      if (msg_len > XF_BUFFER_SIZE) {
-        ESP_LOGE(RPC, "rxMSG[%i] > rx_buffer[%i] would cause overflow, disconnecting!", msg_len, XF_BUFFER_SIZE);
+    if (len < 1) return len; // READERR|CLOSE
+    offset += len;
+    /* Check read finished */
+    if (hdr->length) {
+      u16_t total = hdr->length + sizeof(struct tlv_header);
+      if (total > XF_BUFFER_SIZE) {
+        ESP_LOGE(RPC, "RX Invalid Message Length (%i), MAX=%zu", hdr->length, XF_BUFFER_SIZE - sizeof(struct tlv_header));
         return -1;
       }
-    }
-
-    offset += len;
-
-    /* Check read finished */
-    if (msg_len) {
-      if (offset > msg_len + sizeof(u16_t)) {
-        ESP_LOGE(RPC, "rx Read overflow, expected (%zu), received (%zu)", msg_len + sizeof(u16_t), offset);
+      if (offset > total) {
+        ESP_LOGE(RPC, "RX Read overflow, expected (%i), received (%zu)", total, offset);
         return -1;
       }
       /* Success */
-      if (offset == msg_len + sizeof(u16_t)) {
+      if (offset == total) {
         ESP_LOGI(RPC, "recv_msg(%zu) done", offset);
-        return msg_len; // offset;
+        return hdr->length;
       }
     }
   }
@@ -91,11 +101,13 @@ static int recv_msg (int socket) {
 
 static void initiator_comm (const int sock) {
   char* rx_buffer = rpc_state.rx_buffer;
-  u16_t reply_size = XF_BUFFER_SIZE - 2;
-  struct ngn_state* n = ngn_init(true, rx_buffer + 2, &reply_size);
+  u16_t reply_size = XF_BUFFER_SIZE - sizeof(struct tlv_header);
+  u8_t type = 1;
+  /* offset scratch buffer past tlv header */
+  struct ngn_state* n = ngn_init(true, rx_buffer + sizeof(struct tlv_header), &reply_size);
   while (1) {
     ESP_LOGI(RPC, "C: Sending %d bytes", reply_size);
-    int err = send_msg_hacky(sock, reply_size);
+    int err = dispatch_preloaded(sock, type, reply_size);
     if (err < 0) {
       ESP_LOGE(RPC, "C: socket write error: (%d) %s", errno, lwip_strerr(errno));
       break;
@@ -107,62 +119,86 @@ static void initiator_comm (const int sock) {
     if (len < 0) {
       ESP_LOGE(RPC, "C: socket read error (%d) %s", errno, lwip_strerr(errno));
       break;
-    } else if (len == 0) {
+    }
+    if (len == 0) {
       ESP_LOGI(RPC, "C: Connection closed by remote");
       break;
     }
+
     // Data received
-    else {
-      ESP_LOGI(RPC, "C: Received %d bytes", len);
-      // ESP_LOG_BUFFER_HEXDUMP(RPC, rx_buffer, len + 2, ESP_LOG_INFO);
-      /*rx_buffer[len] = 0; // Null-terminate whatever we received and treat like a string*/
-      /*ESP_LOGI(RPC, "C: %s", rx_buffer + 2);*/
-      int rs = ngn_reconcile(n, len);
-      if (rs < 0) {
-        ESP_LOGE(RPC, "Reconcilliation Error: %i", reply_size);
+    ESP_LOGI(RPC, "C: Received %d bytes", len);
+    struct tlv_header* hdr = (void*)rx_buffer;
+    switch (hdr->type) {
+      case RECON: {
+        int rs = ngn_reconcile(n, len, &hdr->type);
+        if (rs == 0) goto DEINIT;
+        if (rs < 0) {
+          ESP_LOGE(RPC, "Reconcilliation Error: %i", reply_size);
+          goto DEINIT;
+        }
+        reply_size = rs;
+        break;
       }
-      else if (rs == 0) break;
-      else reply_size = rs;
+      default:
+      case INVALID:
+        ESP_LOGE(RPC, "Received INVALID(%i) command: %i", hdr->type, hdr->length);
+        /*rx_buffer[len] = 0; // Null-terminate whatever we received and treat like a string*/
+        /*ESP_LOGI(RPC, "C: %s", rx_buffer + sizeof(struct tlv_header));*/
+        ESP_LOG_BUFFER_HEXDUMP(RPC, rx_buffer, hdr->length + sizeof(struct tlv_header), ESP_LOG_INFO);
+        goto DEINIT;
     }
   }
-
+DEINIT:
   ngn_deinit(n);
 }
 
 /* not sure why static */
 static void server_comm(const int sock) {
-    char *rx_buffer = rpc_state.rx_buffer;
-    u16_t reply_size = XF_BUFFER_SIZE - 2;
-    struct ngn_state* n = ngn_init(false, rx_buffer + 2, &reply_size);
-    int len;
-    do {
-        len = recv_msg(sock);
-        if (len < 0) {
-            ESP_LOGE(RPC, "S: socket read error: (%d) %s", errno, lwip_strerr(errno));
-        } else if (len == 0) {
-            ESP_LOGW(RPC, "S: Connection closed by remote");
-        } else {
-            ESP_LOGI(RPC, "S: Received %d bytes", len);
-            // ESP_LOG_BUFFER_HEXDUMP(RPC, rx_buffer, len + 2, ESP_LOG_INFO);
-            /*rx_buffer[len] = 0; // Null-terminate whatever is received and treat it like a string*/
-            /*ESP_LOGI(RPC, "S: %s", rx_buffer + 2);*/
-            int rs = ngn_reconcile(n, len);
-            if (rs < 0) {
-              ESP_LOGE(RPC, "Reconcilliation Error: %i", reply_size);
-            }
-            else if (rs == 0) break; // Recon complete
-
-            ESP_LOGI(RPC, "C: Sending %d bytes", reply_size);
-            int n = send_msg_hacky(sock, rs);
-            if (n < 0) {
-              ESP_LOGE(RPC, "S: socket write error: (%d) %s", n, lwip_strerr(n));
-              return; // Disconnect
-            }
+  char *rx_buffer = rpc_state.rx_buffer;
+  u16_t reply_size = XF_BUFFER_SIZE - sizeof(struct tlv_header);
+  struct ngn_state* n = ngn_init(false, rx_buffer + sizeof(struct tlv_header), &reply_size);
+  int len;
+  while (1) {
+    len = recv_msg(sock);
+    if (len < 0) {
+      ESP_LOGE(RPC, "S: socket read error: (%d) %s", errno, lwip_strerr(errno));
+      break;
+    }
+    if (len == 0) {
+      ESP_LOGW(RPC, "S: Connection closed by remote");
+      break;
+    }
+    ESP_LOGI(RPC, "S: Received %d bytes", len);
+    struct tlv_header* hdr = (void*)rx_buffer;
+    switch (hdr->type) {
+      case RECON: {
+        int rs = ngn_reconcile(n, len, &hdr->type);
+        if (rs < 0) {
+          ESP_LOGE(RPC, "Reconcilliation Error: %i", reply_size);
+          goto DEINIT;
         }
-      vTaskDelay(50); // Sleep inbetween messages
-    } while (len > 0);
-
-    ngn_deinit(n);
+        if (rs == 0) goto DEINIT;
+        reply_size = rs;
+        break;
+      }
+      default:
+      case INVALID:
+        ESP_LOGE(RPC, "Received INVALID(%i) command: %i", hdr->type, hdr->length);
+        /*rx_buffer[len] = 0; // Null-terminate whatever we received and treat like a string*/
+        /*ESP_LOGI(RPC, "C: %s", rx_buffer + sizeof(struct tlv_header));*/
+        ESP_LOG_BUFFER_HEXDUMP(RPC, rx_buffer, hdr->length + sizeof(struct tlv_header), ESP_LOG_INFO);
+        goto DEINIT;
+    }
+    ESP_LOGI(RPC, "C: Sending %d bytes", reply_size);
+    int n = dispatch_preloaded(sock, reply_size, hdr->type); // TODO: consider lending entire scratch-buffer to repo.
+    if (n < 0) {
+      ESP_LOGE(RPC, "S: socket write error: (%d) %s", n, lwip_strerr(n));
+      return; // Disconnect
+    }
+    vTaskDelay(50); // Sleep inbetween messages
+  }
+DEINIT:
+  ngn_deinit(n);
 }
 
 

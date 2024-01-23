@@ -1,8 +1,10 @@
 #include "repo.h"
 #include "negentropy.h"
+#include "negentropy/types.h"
 #include "negentropy/storage/Vector.h"
 #include "esp_log.h"
 #include "sha-256.h"
+#include "esp_random.h"
 
 #define HASH2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[30], (a)[31]
 #define HASHSTR "%02x%02x %02x%02x..%02x%02x"
@@ -13,14 +15,20 @@ static bool store_loaded = false;
 
 static void init_storage(bool initiator) {
   if (store_loaded) return;
-  uint8_t hash[10][32];
-  for (int i = 0; i < 10; i++) {
+  uint8_t hash[16][32];
+  for (int i = 0; i < 16; i++) {
     char v[12];
-    sprintf(v, "id:%i", i);
+    if (i < 10) {
+      sprintf(v, "id:%i", i);
+    } else {
+      uint32_t r = esp_random();
+      sprintf(v, "id:%i", (int)(r & 0xfff));
+    }
     calc_sha_256(hash[i], v, 12);
     std::string_view hview(reinterpret_cast<const char*>(hash[i]), 32);
     if (
         i < 2 ||
+        i >= 10 ||
         (initiator && (i % 2)) ||
         (!initiator && !(i % 2))
        ) storage.insert(i, hview);
@@ -59,14 +67,32 @@ void ngn_deinit(ngn_state* handle) {
   delete handle;
 }
 
-int ngn_reconcile(ngn_state* handle, const unsigned short m_size) {
+static std::vector<std::string> have;
+static std::vector<std::string> need;
+
+int ngn_reconcile(ngn_state* handle, const unsigned short m_size, unsigned char* io_type) {
   auto ne = static_cast<Negentropy<negentropy::storage::Vector>*>(handle->ne);
   std::string_view msg(reinterpret_cast<const char*>(handle->buffer), m_size);
-
+  unsigned char type = *io_type;
   // Client Recon
   if (handle->initiator) {
-    std::vector<std::string> have, need;
+    /* WIP
+    if (need.size()) {
+      *io_type = 2; // BLOCK_REQ
+      auto id = need.at(need.size() - 1);
+      memcpy(handle->buffer, id.data(), negentropy::ID_SIZE);
+      need.pop_back();
+      return negentropy::ID_SIZE;
+    }
+    if (have.size()) {
+    }
+    */
     std::optional<std::string> reply = ne->reconcile(msg, have, need);
+
+    // TODO: Stash have, need, reply;
+    // Alternate Have/Need until both lists empty;
+    // Transmit reply.
+    // Repeat until have,needs and reply is empty.
 
     for (const auto &item: have) {
       ESP_LOGI(TAG, "HAVE --> " HASHSTR, HASH2STR(item.data()));
@@ -80,6 +106,7 @@ int ngn_reconcile(ngn_state* handle, const unsigned short m_size) {
       return 0;
     }
 
+    *io_type = 1;
     ESP_LOGI(TAG, "ngn_reconcile(init: %i) reply: %zu", handle->initiator, reply->length());
     memcpy(handle->buffer, reply->data(), reply->length());
     return reply->length();
@@ -96,6 +123,7 @@ int ngn_reconcile(ngn_state* handle, const unsigned short m_size) {
 
     ESP_LOGI(TAG, "ngn_reconcile(init: %i) reply: %zu", handle->initiator, reply.length());
     memcpy(handle->buffer, reply.data(), reply.length());
+    *io_type = 1;
     return reply.length();
   }
 }

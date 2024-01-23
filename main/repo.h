@@ -16,9 +16,9 @@ struct ngn_state {
   // negentropy::storage::Vector storage;
 };
 
-struct ngn_state* ngn_init (bool initiator, char *buffer, unsigned short* in_out);
+struct ngn_state* ngn_init (bool initiator, char *buffer, unsigned short* io_length);
 void ngn_deinit(struct ngn_state* handle);
-int ngn_reconcile(struct ngn_state* handle, const unsigned short m_size);
+int ngn_reconcile(struct ngn_state* handle, const unsigned short m_size, unsigned char* io_type);
 
 #ifdef __cplusplus
 }

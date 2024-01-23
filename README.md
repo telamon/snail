@@ -34,7 +34,7 @@ Prebuilt firmware might be available later.
 
 ## Design
 Sneakernet is the art of transferring data using physical transportation and without the use of internet.
-We rely on eventual message delivery within geographical bounds. _- unless you travel further_
+We'll rely on eventual message delivery within geographical bounds. _- unless you travel further_
 
 The snail protocol itself is simple:  
 **Search** for beacons, **Notify** presence, **Attach** to peer, **Inform** news, **Leave** and restart.
@@ -63,11 +63,12 @@ Interaction with a smartphone.
 - [Issue: ESP32(c3+,s3+) NAN support](https://github.com/espressif/esp-idf/issues/12987)
 - [RBSR](https://github.com/AljoschaMeyer/master_thesis/blob/main/main.pdf) using [negentropy](https://github.com/hoytech/negentropy)
 - [Wifi Aware 3.2 Specs](https://device.report/m/980bcb4db0863da46c502ee7c16a63f7606467778fe73fac7ffabcd3cfa5d207.pdf)
-- we're all connected <!-- [The Original Experiment, 1969](https://snap.stanford.edu/class/cs224w-readings/travers69smallworld.pdf) -->
+- [libpostbag](https://git.sr.ht/~telamohn/libpostbag) Previous Attempt (2018)
+ <!-- [The Original Experiment, 1969](https://snap.stanford.edu/class/cs224w-readings/travers69smallworld.pdf) -->
 
 ## Funding
 
-Appreciated but not anticipated
+Appreciated
 
 ```
 # BTC
