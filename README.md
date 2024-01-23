@@ -1,19 +1,18 @@
-# snail
+# SNAIL
+`status: release 0`
 
-> Slow Notes Around Immediate Location
+snail is a relayed protocol for portable unsupervised sneakernet devices.
 
-Snail is a _work-in-progress_ relayed protocol for unsupervised sneakernet devices.
-This repository contains a full node implemenation that uses Wifi NAN for promiscuous communication
-as a means to research, iterate and simplify.
+This repository contains an implemenation that uses Wifi NAN for peer discovery and communication
+in order to iterate and simplify.
 
 ## What you need
-For now,  
-An ESP32 attached to battery, and an SDCard for storage.
+For now, an ESP32/S2 + battery and an MicroSD for storage.
 
 Optional addons:
  - Button
  - RGB-Led
- - OLED (SH1107)
+ - OLED Display (SH1107)
 
 <!--
 ## Releases
@@ -27,58 +26,56 @@ Optional addons:
 
 ## Flashing instructions
 
-1. Install esp-idf
-2. `idf.py build`
-3. `idf.py flash`
+1. Setup [esp-idf](https://github.com/espressif/esp-idf#developing-with-esp-idf)
+2. Clone this repo `git clone --recurse-submodules https://github.com/telamon/snail.git`
+3. Build & flash `idf.py build && idf.py flash`
 
-## Architecture
+Prebuilt firmware might be available later.
 
-[Sneakernet](https://en.wikipedia.org/wiki/Sneakernet) is the art of transferring data by physical transportation and without the use of internet.
-The protocol relies on eventual message delivery within geographical bounds.
+## Design
+Sneakernet is the art of transferring data using physical transportation and without the use of internet.
+We rely on eventual message delivery within geographical bounds. _- unless you travel further_
 
-A snail node is fully autonomous and transitions between the following 5 states:
+The snail protocol itself is simple:  
+**Search** for beacons, **Notify** presence, **Attach** to peer, **Inform** news, **Leave** and restart.
 
-- `WHITE` wakeup state, cleanup previous peer connections and re-init radios if necessary
-- `RED` Searching for beacons, initiate connections to peers.
-- `BLUE` Broadcast beacons, accept peer connections.
-- `PURPLE` Peer found, establish direct connection.
-- `GREEN` Exchanging messages.
-
-![Fig1. Seek, Notify, Attach, Inform, Leave.](./docs/states.svg)
-
-
-
-**Complete Table of Transitions**
-
-| Current | Action        | Next   |
-|---------|---------------|--------|
-| WHITE   | roll_0        | BLUE   |
-| WHITE   | roll_1        | RED    |
-| BLUE    | timeout       | RED    |
-| RED     | timeout       | BLUE   |
-| RED     | ping_sent     | PURPLE |
-| BLUE    | ping_recv     | PURPLE |
-| PURPLE  | connected     | GREEN  |
-| PURPLE  | timeout       | WHITE  |
-| GREEN   | timeout       | WHITE  |
-| GREEN   | reconciliated | WHITE  |
 
 ### Message Format
 `TDB`
 
-### Interaction with non-snail devices
+### Checking Inbox
 `TDB`
+Longpress on button interrupts the SNAIL cycle and puts the device into private mode.
+
+Interaction with a smartphone.
+- Android 8+ has builtin NAN support, Apple requires SoftAP
+- BLE
+- USB-C
+- ~~[Wifi Direct](https://github.com/espressif/esp-idf/issues/6522#issuecomment-1878635833)~~
 
 ## References
-- It's all connected.
 
+`Iteration 0` - Exploring the boundaries of Wifi NAN
 
-<!--
-- [That Wifi NAN Paper]()
-- [Wifi Aware (NAN) Specifications 3.1]()
-- [Range Based Set Reconcilliation]() impl. [Negentropy]()
--->
+- [NAN Potential, paper](https://core.ac.uk/download/pdf/41826471.pdf) section 5. Fig. 3. NAN performance in Osaka downtown
+- [Sneakernet](https://en.wikipedia.org/wiki/Sneakernet)
+- [opennan](https://github.com/seemoo-lab/opennan)
+- [Issue: ESP32(c3+,s3+) NAN support](https://github.com/espressif/esp-idf/issues/12987)
+- [RBSR](https://github.com/AljoschaMeyer/master_thesis/blob/main/main.pdf) using [negentropy](https://github.com/hoytech/negentropy)
+- [Wifi Aware 3.2 Specs](https://device.report/m/980bcb4db0863da46c502ee7c16a63f7606467778fe73fac7ffabcd3cfa5d207.pdf)
+- we're all connected <!-- [The Original Experiment, 1969](https://snap.stanford.edu/class/cs224w-readings/travers69smallworld.pdf) -->
+
+## Funding
+
+Appreciated but not anticipated
+
+```
+# BTC
+bc1qqjgz9fqqxj7kndqelecxmdtqgvtzqrukma5599
+```
 
 ## License
 
-2024 © Tony Ivanov - AGPLv3 / Creative Commons Share Alike
+2024 © Tony Ivanov - The code needs cleanup to meet the standards of AGPLv3,  
+so this version is made available as MIT.
+
