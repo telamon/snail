@@ -6,7 +6,6 @@
 #include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
-#define delay(ms) vTaskDelay((ms) / portTICK_PERIOD_MS)
 
 #define NAN_TOPIC "snail"
 #define NAN_FILTER ""
@@ -19,20 +18,7 @@
 #define EV_NDP_FAILED BIT3
 #define EV_NDP_DEINIT BIT4
 
-/* This belongs in snail.h */
-enum nan_peer_status {
-  OFFLINE = 0,
-  // Significant ones
-  SEEK = 2,
-  NOTIFY = 3,
-  ATTACH = 4,
-  INFORM = 5,
-  LEAVE = 6,
-};
-
 struct nan_state {
-  enum nan_peer_status status;
-  EventGroupHandle_t event_group;
   TaskHandle_t discovery_task;
   esp_netif_t *esp_netif; // Localhost
   /* Pub state */
@@ -45,7 +31,6 @@ struct nan_state {
   wifi_event_ndp_confirm_t ev_ndp_up;
 };
 
-static struct nan_state *g_state; /* sorry */
 
 void nan_discovery_start(struct nan_state *state);
 uint8_t nan_publish(struct nan_state *state);

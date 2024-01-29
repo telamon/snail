@@ -25,19 +25,6 @@
 
 #define TAG "nanr.c"
 
-const char* status_str(enum nan_peer_status s) {
-  switch (s) {
-    case SEEK: return "SEEK";
-    case NOTIFY: return "NOTIFY";
-    case ATTACH: return "ATTACH";
-    case INFORM: return "INFORM";
-    case LEAVE: return "LEAVE";
-    case OFFLINE: return "OFFLIN";
-    default: return "unknown";
-  }
-}
-
-
 int nan_unpublish(struct nan_state *state) {
   if (state->pub_id == 0) {
     ESP_LOGW(TAG, "unecessary nan_unpublish() pub_id is zero");

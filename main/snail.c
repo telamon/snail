@@ -1,21 +1,22 @@
+#include "driver/spi_common.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "nanr.h"
+#include "snail.h"
+#include "store.h"
 #include "esp_log.h"
 #include "esp_random.h"
+
+#define TAG "snail.c"
+#define BTN GPIO_NUM_39
+
+#ifdef DISPLAY_LED
 // WS2812
 #include "hal/gpio_types.h"
 #include "driver/gpio.h"
 #include "led_strip.h"
 #include "math.h"
 
-#define TAG "snail.c"
-
-#define BTN GPIO_NUM_39
-
-#define DISPLAY_LED
-#ifdef DISPLAY_LED
 static led_strip_handle_t led_strip;
 static void set_led (uint32_t rgb) {
   led_strip_set_pixel(led_strip, 0, (rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
@@ -38,7 +39,7 @@ static void init_display(void) {
 
 #define BW(s, w) (((s) % (w)) / ((float)w))
 #define MAX(a, b) ((a)>(b)?(a):(b))
-void display_state (struct nan_state *state) {
+void display_state (snail_state* state) {
   const TickType_t seed = xTaskGetTickCount();
   /* Global Animation Duration */
   const uint16_t duration = 5000 / portTICK_PERIOD_MS;
@@ -93,6 +94,8 @@ void display_state (struct nan_state *state) {
 }
 #endif
 
+static snail_state *g_state;
+
 /* The main task drives optional UI
  * and wifi NAN discovery.
  */
@@ -101,14 +104,21 @@ void app_main(void) {
   ESP_LOGI(TAG, "snail.c main()");
   init_display();
 
-  struct nan_state state = {0};
+  snail_state state = {0};
   display_state(&state);
+#ifdef PROTO_NAN
   nan_discovery_start(&state);
+#endif
+  /* SoftAP Swapping */
+  state.status = SEEK;
 
   /* Hookup button */
   ESP_ERROR_CHECK(gpio_set_direction(BTN, GPIO_MODE_INPUT));
   ESP_ERROR_CHECK(gpio_pullup_en(BTN));
   // ESP_ERROR_CHECK(gpio_intr_enable(BTN));
+
+  storage_init();
+  storage_deinit();
 
   int hold = gpio_get_level(BTN);
   TickType_t pressedAt = 000000000;
@@ -120,10 +130,10 @@ void app_main(void) {
       else {
         uint16_t holdTime = xTaskGetTickCount() - pressedAt;
         if (holdTime > 100) { // Long Press
-          nan_unpublish(&state);
-          nan_unsubscribe(&state);
+          /*nan_unpublish(&state);*/
+          /*nan_unsubscribe(&state);*/
         } else {
-          nan_swap_polarity(&state);
+          swap_polarity(&state);
         }
         ESP_LOGW(TAG, "Button was held %i", holdTime);
         delay(150);
@@ -139,9 +149,76 @@ void app_main(void) {
       if (delta > (8000 + (r & 2047)) / portTICK_PERIOD_MS) {
         mode_start = xTaskGetTickCount();
         // ESP_LOGW(TAG, "SWAPPING POLARITY %i, r: %08lx", delta, r);
-        nan_swap_polarity(&state);
+        swap_polarity(&state);
       }
     }
     delay(5);
+  }
+}
+
+void swap_polarity(snail_state *state) {
+  if (state->status == SEEK) state->status = NOTIFY;
+  else state->status = SEEK;
+#ifdef PROTO_NAN
+  nan_swap_polarity(&state);
+#endif
+}
+
+const char* status_str(peer_status s) {
+  switch (s) {
+    case SEEK: return "SEEK";
+    case NOTIFY: return "NOTIFY";
+    case ATTACH: return "ATTACH";
+    case INFORM: return "INFORM";
+    case LEAVE: return "LEAVE";
+    case OFFLINE: return "OFFLIN";
+    default: return "unknown";
+  }
+}
+
+/**
+ * @brief State Transition Matrix
+ * @returns 0: valid, -1: invalid source state, 1: invalid target state
+ */
+int validate_transition(peer_status from, peer_status to) {
+  switch (from) {
+    case OFFLINE:
+      switch (to) {
+        case NOTIFY:
+        case SEEK:
+          return 0;
+        default: return 1;
+      }
+    case SEEK:
+      switch (to) {
+        case NOTIFY:
+        case ATTACH:
+          return 0;
+        default: return 1;
+      }
+    case NOTIFY:
+      switch (to) {
+        case SEEK:
+        case ATTACH:
+          return 0;
+        default: return 1;
+      }
+    case ATTACH:
+      switch (to) {
+        case INFORM:
+        case LEAVE:
+          return 0;
+        default: return 1;
+      }
+    case INFORM:
+      return to == LEAVE ? 0 : 1;
+    case LEAVE:
+      switch (to) {
+        case SEEK:
+        case NOTIFY:
+          return 0;
+        default: return 1;
+      }
+    default: return -1;
   }
 }
