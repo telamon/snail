@@ -38,7 +38,7 @@ static void init_display(void) {
 }
 
 #define BW(s, w) (((s) % (w)) / ((float)w))
-#define MAX(a, b) ((a)>(b)?(a):(b))
+// #define MAX(a, b) ((a)>(b)?(a):(b)) - redefined?
 void display_state (snail_state* state) {
   const TickType_t seed = xTaskGetTickCount();
   /* Global Animation Duration */

@@ -38,5 +38,4 @@ int nan_unpublish(struct nan_state *state);
 uint8_t nan_subscribe(struct nan_state *state);
 int nan_unsubscribe(struct nan_state *state);
 int nan_swap_polarity(struct nan_state *state);
-const char* status_str(enum nan_peer_status s);
 #endif

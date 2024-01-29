@@ -7,8 +7,8 @@
  * CONFIG
  *--------------------*/
 #define DISPLAY_LED
-// #define USE_NAN
-#define USE_AP
+// #define PROTO_NAN
+#define PROTO_SWAP
 
 
 
@@ -28,7 +28,7 @@ typedef struct {
   peer_status status;
   EventGroupHandle_t event_group;
 
-#ifdef USE_NAN
+#ifdef PROTO_NAN
 #endif
 } snail_state;
 

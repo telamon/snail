@@ -1,8 +1,9 @@
 #include "store.h"
+#include "sdmmc_cmd.h"
 #include <dirent.h>
 
-static const char TAG[] = "store.c";
 #define MOUNT_POINT "/sd0"
+static const char TAG[] = "store.c";
 static const char mount_point[] = MOUNT_POINT;
 sdmmc_host_t host = SDSPI_HOST_DEFAULT();
 sdmmc_card_t* card;
@@ -55,7 +56,8 @@ esp_err_t storage_init (void) {
 
   // Card has been initialized, print its properties
   sdmmc_card_print_info(stdout, card);
-
+  //sdmmc_write_sectors(card, &buffer, start_sector, sector_count); // Each sector is 512byte; 1k pBlock = 2sectors.
+ 
   // Dummy test listing files
   ESP_LOGI(TAG, "Listing root, for fun");
   DIR *d;
@@ -78,4 +80,3 @@ esp_err_t storage_deinit(void) {
   else ESP_LOGI(TAG, "sdcard %s unmounted", mount_point);
   return spi_bus_free(host.slot);
 }
-
