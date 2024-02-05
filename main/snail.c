@@ -162,7 +162,7 @@ void app_main(void) {
     if ((state.status == SEEK || state.status == NOTIFY)) {
       uint32_t r = esp_random() ; // Force drift/desync
       const uint16_t delta = xTaskGetTickCount() - mode_start;
-      if (delta > (8000 + (r & 2047)) / portTICK_PERIOD_MS) {
+      if (delta > (10000 + (r & 2047)) / portTICK_PERIOD_MS) {
         mode_start = xTaskGetTickCount();
         // ESP_LOGW(TAG, "SWAPPING POLARITY %i, r: %08lx", delta, r);
         // Disabled for manual testing.

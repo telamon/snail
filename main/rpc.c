@@ -111,6 +111,7 @@ void dummy_init(bool initiator, uint16_t max_size){
   dummy_bench.max_size = max_size;
   dummy_bench.initiator = initiator;
 }
+
 int dummy_reply (struct tlv_header *io_header, char *io_message) {
   if (dummy_bench.initiator) {
     if (dummy_bench.round > 60) return 0;
@@ -122,6 +123,8 @@ int dummy_reply (struct tlv_header *io_header, char *io_message) {
   io_header->type = CMD_BLOCK;
   memset(io_message, dummy_bench.round, dummy_bench.max_size);
   dummy_bench.tx += io_header->length;
+
+  /*
   int64_t duration = esp_timer_get_time() - dummy_bench.start;
   ESP_LOGI(TAG, "BW-BENCH: msg %i %uB [RX %.2f KB/s, TX: %.2f KB/s]",
       dummy_bench.round,
@@ -129,17 +132,18 @@ int dummy_reply (struct tlv_header *io_header, char *io_message) {
       (dummy_bench.rx / (duration / 1000000.0)) / 1024,
       (dummy_bench.tx / (duration / 1000000.0)) / 1024
       );
+      */
   dummy_bench.round++;
   return io_header->length;
 }
 
 void dummy_deinit(int exit_code){
   int64_t duration = esp_timer_get_time() - dummy_bench.start;
-  ESP_LOGI(TAG, "Throughput test complete exit: %i (%"PRId64" ms) [RX %.2f B/s, TX: %.2f B/s]",
+  ESP_LOGI(TAG, "Throughput test complete exit: %i (%"PRId64" ms) [RX %.2f KB/s, TX: %.2f KB/s]",
       exit_code,
       duration / 1000,
-      dummy_bench.rx / (duration / 1000000.0),
-      dummy_bench.tx / (duration / 1000000.0)
+      (dummy_bench.rx / (duration / 1000000.0)) / 1024,
+      (dummy_bench.tx / (duration / 1000000.0)) / 1024
       );
 }
 struct conversation_handlers bench_convo = {

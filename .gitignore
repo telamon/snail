@@ -4,3 +4,6 @@ sdkconfig
 sdkconfig.old
 managed_components/
 dependencies.lock
+tools/
+!tools/package.json
+!tools/multimon.js

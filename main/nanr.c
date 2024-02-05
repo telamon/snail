@@ -174,9 +174,9 @@ uint8_t nanr_publish() {
 }
 
 void nanr_init() {
-// #define COWABUNGA
-#ifndef COWABUNGA
-  /* Initialize NVS - What does this do? */
+// #define SKIP_NVS
+#ifndef SKIP_NVS
+  /* Initialize NVS */
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_ERROR_CHECK(nvs_flash_erase());
@@ -241,11 +241,15 @@ void nanr_init() {
 }
 
 int nanr_ndp_deinit() {
+  ESP_LOGI(TAG, "nanr_ndp_deinit() ndp_id: %i, status: %i", state.ev_ndp_up.ndp_id, state.ev_ndp_up.status);
+  if (!state.ev_ndp_up.ndp_id && !state.ev_ndp_up.status) return 0; /* Not active */
+
   wifi_nan_datapath_end_req_t end_req = {0};
   end_req.ndp_id = state.ev_ndp_up.ndp_id;
   memcpy(&end_req.peer_mac, &state.ev_ndp_up.peer_ndi, sizeof(end_req.peer_mac));
   int res = esp_wifi_nan_datapath_end(&end_req);
   ESP_ERROR_CHECK_WITHOUT_ABORT(res);
+
   ESP_LOGW(TAG, "NDP deinitalized: %i", res);
   memset(&state.ev_ndp_up, 0, sizeof(state.ev_ndp_up));
   return 0;
@@ -262,9 +266,9 @@ void nanr_reroll() {
 }
 
 esp_err_t nanr_restart() {
-  /* I Hate to say it but restarting 
+  /* I Hate to say it but restarting
    * the entire piece is the most stable way of doing
-   * NAN Communication atm. 
+   * NAN Communication atm.
    */
   // esp_restart();
   /* ATTEMPT 1 */
@@ -322,7 +326,7 @@ int nanr_process_events () {
     }
 
     /* [Optional] Respond with 64byte followup? */
-    /* Broadcast not used or maybe should to signal latest timestamp;
+    /* Broadcast not used atm, should include latest block height.
      * let publisher decide if worth it to establish datapath or not?
       wifi_nan_followup_params_t fup = {
           .inst_id = sub_id,
@@ -341,11 +345,11 @@ int nanr_process_events () {
     ndp_req.confirm_required = true;
     ndp_req.pub_id = state.svc_match_evt.publish_id;
     memcpy(ndp_req.peer_mac, state.svc_match_evt.pub_if_mac, sizeof(ndp_req.peer_mac));
-    // Outgoing Connection
     ESP_LOGI(TAG, "Connecting to "MACSTR"", MAC2STR(ndp_req.peer_mac));
     int ret = esp_wifi_nan_datapath_req(&ndp_req);
-    ESP_ERROR_CHECK_WITHOUT_ABORT(ret);
-    if (ret != ESP_OK) ESP_ERROR_CHECK(nanr_ndp_deinit());
+
+    ESP_ERROR_CHECK_WITHOUT_ABORT(ret); /* Log ndp connection errors */
+    if (ret != ESP_OK) ESP_ERROR_CHECK(nanr_ndp_deinit()); /* Attempt cleanup if needed */
   }
 
   else if (bits & EV_NDP_CONFIRMED) {
@@ -361,7 +365,7 @@ int nanr_process_events () {
     snail_transition(ATTACH);
     ip_addr_t target_addr = {0};
     esp_wifi_nan_get_ipv6_linklocal_from_mac(&target_addr.u_addr.ip6, state.ev_ndp_up.peer_ndi);
-
+    ESP_LOGI(TAG, "own_ndi: "MACSTR, MAC2STR(state.ev_ndp_up.own_ndi));
     if (initiator) {
       // nan_unsubscribe(state);
       ESP_LOGI(TAG, "Connecting to remote peer ip: %s", ip6addr_ntoa(&target_addr.u_addr.ip6));
