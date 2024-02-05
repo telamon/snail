@@ -1,4 +1,5 @@
-/* NAN Radio Peer Provider */
+/* NAN Radio Peer Provider
+ * A.k.a NAN-Relay */
 #ifndef NANR_H
 #define NANR_H
 #include "freertos/FreeRTOS.h"
@@ -18,7 +19,8 @@
 #define EV_NDP_FAILED BIT3
 #define EV_NDP_DEINIT BIT4
 
-struct nan_state {
+struct nanr_state {
+  EventGroupHandle_t event_group;
   TaskHandle_t discovery_task;
   esp_netif_t *esp_netif; // Localhost
   /* Pub state */
@@ -32,10 +34,12 @@ struct nan_state {
 };
 
 
-void nan_discovery_start(struct nan_state *state);
-uint8_t nan_publish(struct nan_state *state);
-int nan_unpublish(struct nan_state *state);
-uint8_t nan_subscribe(struct nan_state *state);
-int nan_unsubscribe(struct nan_state *state);
-int nan_swap_polarity(struct nan_state *state);
+void nanr_discovery_start();
+uint8_t nanr_publish();
+int nanr_unpublish();
+uint8_t nanr_subscribe();
+int nanr_unsubscribe();
+int nanr_swap_polarity();
+
+void nanr_inform_complete(int exit_code);
 #endif

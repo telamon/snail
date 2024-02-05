@@ -1,5 +1,6 @@
 /**
  * Exposes SDMMC function for reading/writing blocks
+ * THIS FILE IS JUNK ATM.
  */
 
 /* #include "driver/sdspi_host.h" */
@@ -22,12 +23,13 @@ esp_err_t storage_deinit(void);
 typedef uint8_t public_key_t[32];
 typedef uint8_t block_id_t[64]; /* Synonymous with Signature */
 typedef uint8_t block_hash_t[32];
+
 /**
  * Synonymous with Node.
  * Sector0 contains the block-descriptor
  * Sector1-3 contains actual block
  */
-typedef struct {
+struct block_descriptor {
   uint8_t flags; /* DELETED|LEFT|RIGHT */
   uint16_t size;
   uint16_t date;
@@ -36,8 +38,9 @@ typedef struct {
   public_key_t author;
   block_id_t id; /* PicoBlocks use a non-malleable Signature as BlockID, not hash */
   block_id_t parentId; /* PicoDAG parent. unrelated to storage nodes. */
-  block_hash_t children[4];
-} BlockDescriptor; /* 512-(16+16+32+16+32+64+64+4*32) = 144bytes left for indexing */
+  uint32_t children[2]; /* Sector ptr */
+}; /* 512-(16+16+32+16+32+64+64) = 144bytes left for indexing */
+
 
 /**
  * Wishlist:
@@ -47,4 +50,9 @@ typedef struct {
  * delete_block()
  *
  * Is it faster to use sd-cards without FS?
+ *
+ * I know to little to do this right now.
+ * First step is to get a solid on connectivity.
+ * Need to benchmark and unglitch NAN or SW-AP
  */
+int store_list_blocks();

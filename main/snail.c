@@ -6,9 +6,19 @@
 #include "store.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_timer.h"
+
+static struct snail_state state = {0};
 
 #define TAG "snail.c"
 #define BTN GPIO_NUM_39
+
+#ifdef PROTO_NAN
+#include "nanr.h"
+#endif
+#ifdef PROTO_SWAP
+#include "swap.h"
+#endif
 
 #ifdef DISPLAY_LED
 // WS2812
@@ -39,7 +49,7 @@ static void init_display(void) {
 
 #define BW(s, w) (((s) % (w)) / ((float)w))
 // #define MAX(a, b) ((a)>(b)?(a):(b)) - redefined?
-void display_state (snail_state* state) {
+void display_state (struct snail_state* state) {
   const TickType_t seed = xTaskGetTickCount();
   /* Global Animation Duration */
   const uint16_t duration = 5000 / portTICK_PERIOD_MS;
@@ -94,8 +104,6 @@ void display_state (snail_state* state) {
 }
 #endif
 
-static snail_state *g_state;
-
 /* The main task drives optional UI
  * and wifi NAN discovery.
  */
@@ -104,21 +112,29 @@ void app_main(void) {
   ESP_LOGI(TAG, "snail.c main()");
   init_display();
 
-  snail_state state = {0};
   display_state(&state);
+
+  /*storage_init();*/
+  /*storage_deinit();*/
+
 #ifdef PROTO_NAN
-  nan_discovery_start(&state);
+  nanr_discovery_start();
 #endif
   /* SoftAP Swapping */
-  state.status = SEEK;
+#ifdef PROTO_SWAP
+  uint64_t start = esp_timer_get_time();
+  swap_init();
+  swap_seek();
+  uint32_t delta = (esp_timer_get_time() - start) / 1000;
+  ESP_LOGI(TAG, "Swap init + seek %"PRIu32" ms", delta);
+  // state.status = SEEK;
+#endif
 
   /* Hookup button */
   ESP_ERROR_CHECK(gpio_set_direction(BTN, GPIO_MODE_INPUT));
   ESP_ERROR_CHECK(gpio_pullup_en(BTN));
   // ESP_ERROR_CHECK(gpio_intr_enable(BTN));
 
-  storage_init();
-  storage_deinit();
 
   int hold = gpio_get_level(BTN);
   TickType_t pressedAt = 000000000;
@@ -130,10 +146,10 @@ void app_main(void) {
       else {
         uint16_t holdTime = xTaskGetTickCount() - pressedAt;
         if (holdTime > 100) { // Long Press
-          /*nan_unpublish(&state);*/
-          /*nan_unsubscribe(&state);*/
+          nanr_unpublish();
+          nanr_unsubscribe();
         } else {
-          swap_polarity(&state);
+          swap_polarity();
         }
         ESP_LOGW(TAG, "Button was held %i", holdTime);
         delay(150);
@@ -149,18 +165,19 @@ void app_main(void) {
       if (delta > (8000 + (r & 2047)) / portTICK_PERIOD_MS) {
         mode_start = xTaskGetTickCount();
         // ESP_LOGW(TAG, "SWAPPING POLARITY %i, r: %08lx", delta, r);
-        swap_polarity(&state);
+        // Disabled for manual testing.
+        swap_polarity();
       }
     }
     delay(5);
   }
 }
 
-void swap_polarity(snail_state *state) {
-  if (state->status == SEEK) state->status = NOTIFY;
-  else state->status = SEEK;
+void swap_polarity() {
+  // if (state.status == SEEK) snail_transition(NOTIFY);
+  // else state.status = SEEK;
 #ifdef PROTO_NAN
-  nan_swap_polarity(&state);
+  nanr_swap_polarity();
 #endif
 }
 
@@ -171,9 +188,24 @@ const char* status_str(peer_status s) {
     case ATTACH: return "ATTACH";
     case INFORM: return "INFORM";
     case LEAVE: return "LEAVE";
-    case OFFLINE: return "OFFLIN";
+    case OFFLINE: return "OFFLINE";
     default: return "unknown";
   }
+}
+
+void snail_transition (peer_status target) {
+  int ret = validate_transition(state.status, target);
+  ESP_LOGI(TAG, "Status change: %s => %s, v: %i", status_str(state.status), status_str(target), ret);
+  if (ret != 0) {
+    ESP_LOGE(TAG, "Invalid tansition: %s => %s", status_str(state.status), status_str(target));
+    abort();
+  }
+  state.status = target;
+  // TODO: Dispatch blocked listner
+}
+
+peer_status snail_current_status(void) {
+  return state.status;
 }
 
 /**
@@ -186,6 +218,7 @@ int validate_transition(peer_status from, peer_status to) {
       switch (to) {
         case NOTIFY:
         case SEEK:
+        case LEAVE:
           return 0;
         default: return 1;
       }
@@ -193,6 +226,7 @@ int validate_transition(peer_status from, peer_status to) {
       switch (to) {
         case NOTIFY:
         case ATTACH:
+        case LEAVE: /* TEMP INVALID */
           return 0;
         default: return 1;
       }
@@ -200,6 +234,7 @@ int validate_transition(peer_status from, peer_status to) {
       switch (to) {
         case SEEK:
         case ATTACH:
+        case LEAVE: /* TEMP INVALID */
           return 0;
         default: return 1;
       }

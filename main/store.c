@@ -57,7 +57,7 @@ esp_err_t storage_init (void) {
   // Card has been initialized, print its properties
   sdmmc_card_print_info(stdout, card);
   //sdmmc_write_sectors(card, &buffer, start_sector, sector_count); // Each sector is 512byte; 1k pBlock = 2sectors.
- 
+
   // Dummy test listing files
   ESP_LOGI(TAG, "Listing root, for fun");
   DIR *d;
@@ -80,3 +80,21 @@ esp_err_t storage_deinit(void) {
   else ESP_LOGI(TAG, "sdcard %s unmounted", mount_point);
   return spi_bus_free(host.slot);
 }
+
+#define SECTOR_SIZE 512
+#define SLOT_SIZE SECTOR_SIZE*4
+#define SLOT_ACTIVE 1
+
+uint32_t next_empty(const uint32_t scan_start) {
+  uint8_t buffer[SECTOR_SIZE];
+  struct block_descriptor *hdr = (void*) &buffer;
+  uint32_t offset = scan_start;
+  while (1) {
+    esp_err_t ret = sdmmc_read_sectors(card, &buffer, offset, 1);
+    ESP_ERROR_CHECK(ret);
+    if (!(hdr->flags & 1)) break;
+    offset += SLOT_SIZE;
+  }
+  return offset;
+}
+
