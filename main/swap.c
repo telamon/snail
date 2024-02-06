@@ -2,8 +2,10 @@
 * Software AP - Swapping
 */
 #include "esp_netif.h"
+#include "esp_netif_ip_addr.h"
 #include "esp_netif_types.h"
 #include "esp_wifi_types.h"
+#include "lwip/ip4_addr.h"
 #include "lwip/ip_addr.h"
 #include "snail.h"
 #include "swap.h"
@@ -73,18 +75,18 @@ static struct swap_state {
   }
 };
 
-// APIPA range: 169.254.0.0/16
-#define IP_AP 0xa9fe0001
-#define IP_MASK 0xffff0000
+// APIPA range: 169.254.0.1/16
+#define IP_AP   0x0100fea9
+#define IP_MASK 0x0000ffff
 static const esp_netif_ip_info_t ip_info_ap = {
   .ip.addr = IP_AP,
-  .netmask.addr = IP_MASK, // /16
+  .netmask.addr = IP_MASK,
   .gw.addr = 0
 };
 static esp_netif_ip_info_t ip_info_sta = {
   .ip.addr = IP_AP + 1, // dynamically set by sta_connect()
-  .netmask.addr = IP_MASK, // /16
-  .gw.addr = 0
+  .netmask.addr = IP_MASK,
+  .gw.addr = IP_AP
 };
 
 /**
@@ -155,15 +157,23 @@ static void vsie_callback (
 void init_softap(void) {
   wifi_config_t *config = &state.ap_config;
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, config));
-  ESP_LOGI(TAG, "init_softap finished. SSID:%s channel:%d", SSID, config->ap.channel);
-  /* Reconfigure DHCP-server */
-  // esp_netif_dhcps_option(WIFI_IF_AP, ESP_NETIF_OP_SET);
-
-  // esp_wifi_80211_tx(WIFI_IF_AP, &buffer, length, true); // ulitmate fallback raw frames.
   // esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_LR); // Weird "patended" longrange-mode (maybe periodically enable)
+
+  /* Reconfigure IP & DHCP-server */
+  ESP_ERROR_CHECK(esp_netif_dhcps_stop(state.netif_ap));
+  ESP_ERROR_CHECK(esp_netif_set_ip_info(state.netif_ap, &ip_info_ap));
+  ESP_ERROR_CHECK(esp_netif_dhcps_start(state.netif_ap));
+
+  ESP_LOGI(TAG, "init_softap finished. SSID:%s channel:%d, ip: ", SSID, config->ap.channel);
+
+  /* Enable napt on the AP netif (Network Address & Port Translation) */
+  /* if (esp_netif_napt_enable(state.netif_ap) != ESP_OK) {
+    ESP_LOGE(TAG, "NAPT not enabled on the netif: %p", state.netif_ap);
+  } */
 
   /* Custom data in AP-beacons */
   // TODO: move to update_beacon_info() and call at beginning of every NOTIFY
+  // esp_wifi_80211_tx(WIFI_IF_AP, &buffer, length, true); // ulitmate fallback raw frames.
   uint8_t ie_data[38]; // sizeof(vendor_ie_data_t) + 32
   vendor_ie_data_t *hdr = (vendor_ie_data_t*)&ie_data;
   hdr->element_id = 0xDD;
@@ -172,11 +182,6 @@ void init_softap(void) {
   hdr->vendor_oui_type = 0;
   memset(hdr->payload, 0xff, 32); // TODO: blockheight/hash
   esp_wifi_set_vendor_ie(true, WIFI_VND_IE_TYPE_BEACON, 0, &ie_data);
-
-  /* Enable napt on the AP netif (Network Address & Port Translation) */
-  /* if (esp_netif_napt_enable(state.netif_ap) != ESP_OK) {
-    ESP_LOGE(TAG, "NAPT not enabled on the netif: %p", state.netif_ap);
-  } */
 }
 
 
@@ -190,16 +195,14 @@ int sta_connect(const uint8_t *bssid) {
 
   /* Stop DHCP-client */
   int err = esp_netif_dhcpc_stop(state.netif_sta); // Disable to-begin-with?
-  if (err != ESP_OK || err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+  if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
     ESP_ERROR_CHECK(err);
   }
   // esp_netif_dhcpc_option();
 
   /* Set static address */
   ESP_ERROR_CHECK(esp_netif_get_mac(state.netif_sta, state.sta_mac));
-  ip_info_sta.ip.addr = (IP_AP & IP_MASK) // Grab subnet from AP
-    | ((state.sta_mac[4] << 8) & 0xff)
-    | ((state.sta_mac[5] == 1 ? 2 : state.sta_mac[5]) & 0xff);
+  IP4_ADDR(&ip_info_sta.ip, 169, 254, state.sta_mac[4], state.sta_mac[5] == 1 ? 2: state.sta_mac[5]);
   ESP_LOGI(TAG, "STA_IP_INFO mac: "MACSTR", ip: "IPSTR,
       MAC2STR(state.sta_mac),
       IP2STR(&ip_info_sta.ip));
@@ -267,8 +270,10 @@ static void wifi_event_handler(
   }
 }
 
+#define MAX_SCAN 10
+static wifi_ap_record_t records[MAX_SCAN];
+
 int swap_seek_scan(void) {
-  // scanning...
   wifi_scan_config_t scan_conf = {
     .channel = 6,
     .show_hidden = true,
@@ -276,23 +281,29 @@ int swap_seek_scan(void) {
   };
   ESP_LOGI(TAG, "swap_seeker:scan() started");
   ESP_ERROR_CHECK(esp_wifi_scan_start(&scan_conf, true)); // block
+
   /* Scan complete */
   uint16_t n_accesspoints;
   uint16_t n_peers;
+
   /* Process Peers */
   int selected_peer = peer_select_num(&n_peers);
   ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&n_accesspoints));
   ESP_LOGI(TAG, "scan complete.. %iAPs %iPeers", n_accesspoints, n_peers);
-  /* Process APs */
-  wifi_ap_record_t record;
+
+  /* Process APs (5.1.2-style) */
+  n_accesspoints = MAX_SCAN;
+  ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&n_accesspoints, records));
   for (int i = 0; i < n_accesspoints; i++) {
-    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_record(&record));
+    /* TODO: write to journey.log */
     ESP_LOGI(TAG, "AP [%i] auth: %i, ssid: %s",
-        record.rssi,
-        record.authmode,
-        record.ssid
+        records[i].rssi,
+        records[i].authmode,
+        records[i].ssid
     );
   }
+  ESP_ERROR_CHECK(esp_wifi_clear_ap_list());
+
   int ret = -1;
   /* Initiate Connection */
   if (selected_peer >= 0) {
@@ -339,7 +350,7 @@ static void swap_seeker_task (void* pvParams) {
           ESP_LOGI(TAG, "STA: IP link up! rpc_connect() imminent");
 
           ip_addr_t target = {
-            .u_addr.ip4.addr = 0xc0a80401 //192.168.4.1
+            .u_addr.ip4.addr = IP_AP //192.168.4.1
           }; // TODO: IPv6
 
           // TODO: ptr of target ends up in rpc-state and corrupts after loop-iter
