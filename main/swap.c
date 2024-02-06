@@ -44,6 +44,7 @@ static struct swap_state {
   TaskHandle_t seeker_task;
   wifi_config_t ap_config;
   wifi_config_t sta_config;
+  uint8_t sta_mac[6];
   bool initiator;
   struct peer_info peers[N_PEERS];
 } state = {
@@ -70,6 +71,20 @@ static struct swap_state {
       .bssid_set = 1
     },
   }
+};
+
+// APIPA range: 169.254.0.0/16
+#define IP_AP 0xa9fe0001
+#define IP_MASK 0xffff0000
+static const esp_netif_ip_info_t ip_info_ap = {
+  .ip.addr = IP_AP,
+  .netmask.addr = IP_MASK, // /16
+  .gw.addr = 0
+};
+static esp_netif_ip_info_t ip_info_sta = {
+  .ip.addr = IP_AP + 1, // dynamically set by sta_connect()
+  .netmask.addr = IP_MASK, // /16
+  .gw.addr = 0
 };
 
 /**
@@ -142,7 +157,7 @@ void init_softap(void) {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, config));
   ESP_LOGI(TAG, "init_softap finished. SSID:%s channel:%d", SSID, config->ap.channel);
   /* Reconfigure DHCP-server */
-  // esp_netif_dhcps_option();
+  // esp_netif_dhcps_option(WIFI_IF_AP, ESP_NETIF_OP_SET);
 
   // esp_wifi_80211_tx(WIFI_IF_AP, &buffer, length, true); // ulitmate fallback raw frames.
   // esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_LR); // Weird "patended" longrange-mode (maybe periodically enable)
@@ -172,25 +187,31 @@ int sta_connect(const uint8_t *bssid) {
   memcpy(config->sta.bssid, bssid, sizeof(config->sta.bssid));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, config));
   ESP_LOGI(TAG, "station reconfigured to "MACSTR, MAC2STR(config->sta.bssid));
-  int err = esp_wifi_connect();
+
+  /* Stop DHCP-client */
+  int err = esp_netif_dhcpc_stop(state.netif_sta); // Disable to-begin-with?
+  if (err != ESP_OK || err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+    ESP_ERROR_CHECK(err);
+  }
+  // esp_netif_dhcpc_option();
+
+  /* Set static address */
+  ESP_ERROR_CHECK(esp_netif_get_mac(state.netif_sta, state.sta_mac));
+  ip_info_sta.ip.addr = (IP_AP & IP_MASK) // Grab subnet from AP
+    | ((state.sta_mac[4] << 8) & 0xff)
+    | ((state.sta_mac[5] == 1 ? 2 : state.sta_mac[5]) & 0xff);
+  ESP_LOGI(TAG, "STA_IP_INFO mac: "MACSTR", ip: "IPSTR,
+      MAC2STR(state.sta_mac),
+      IP2STR(&ip_info_sta.ip));
+  ESP_ERROR_CHECK(esp_netif_set_ip_info(state.netif_sta, &ip_info_sta));
+
+  /* Connect */
+  err = esp_wifi_connect();
   if (err == ESP_OK) ESP_LOGI(TAG, "sta_connect() succeeded");
   else {
     ESP_LOGE(TAG, "sta_connect() failed %i", err);
     ESP_ERROR_CHECK(err);
   }
-
-  err = esp_netif_dhcpc_stop(state.netif_sta); // Disable to-begin-with?
-  if (err != ESP_OK || err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
-    ESP_ERROR_CHECK(err);
-  }
-  // esp_netif_dhcpc_option();
-  // APIPA range: 169.254.0.0/255.255.0.0
-  esp_netif_ip_info_t info = { // TODO: move to state
-    .ip.addr = esp_ip4addr_aton("169.254.19.84"),
-    .netmask.addr = esp_ip4addr_aton("255.255.0.0"),
-    .gw.addr = 0
-  };
-  esp_netif_set_ip_info(state.netif_sta, &info);
   return err;
 }
 
