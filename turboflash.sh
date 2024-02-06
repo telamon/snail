@@ -21,4 +21,4 @@ for dev in /dev/ttyUSB*; do
 done
 
 wait
-node tools/multimon.js
+# node tools/multimon.js

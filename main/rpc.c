@@ -1,5 +1,7 @@
 #include "snail.h"
+#ifdef PROTO_NAN
 #include "nanr.h"
+#endif
 #include "rpc.h"
 #include "esp_log.h"
 #include "lwip/err.h"
@@ -206,8 +208,7 @@ int do_communicate (bool initiator, const int sock) {
 }
 
 static void tcp_server_task(void *pvParameters) {
-    char addr_str[128];
-    int addr_family = (int)pvParameters;
+    int addr_family = AF_INET6; // (int)pvParameters;
     int ip_protocol = 0;
     int keepAlive = 1;
     int keepIdle = KEEPALIVE_IDLE;
@@ -251,6 +252,7 @@ static void tcp_server_task(void *pvParameters) {
         goto DEINIT;
     }
     rpc_state.listening = true;
+    char addr_str[128];
     while (rpc_state.listening) {
         ESP_LOGI(TAG, "blocking task with accept()");
         struct sockaddr_storage source_addr; // Large enough for both IPv4 or IPv6
@@ -260,8 +262,13 @@ static void tcp_server_task(void *pvParameters) {
             ESP_LOGE(TAG, "Unable to accept connection: (%d) %s", errno, lwip_strerr(errno));
             break;
         }
+        /* Prevent simultaneous peer connections */
+        if (snail_transition_valid(INFORM) != 0) {
+          ESP_LOGW(TAG, "Status Busy (%s), additional connection dropped", status_str(snail_current_status()));
+          goto DROP_CONNECTION;
+        }
+
         xEventGroupSetBits(rpc_state.event_group, EV_RPC_PEER_SOCKET);
-        // g_state->status = INFORM;
 
         // Set tcp keepalive option
         setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(int));
@@ -277,10 +284,11 @@ static void tcp_server_task(void *pvParameters) {
 
         ESP_LOGI(TAG, "Socket accepted ip address: %s", addr_str);
         int ret = do_communicate(false, sock);
+        snail_inform_complete(ret);
+DROP_CONNECTION:
         shutdown(sock, 0);
         close(sock);
-        nanr_inform_complete(ret);
-        vTaskDelay(1);
+        vTaskDelay(10);
     }
 
 DEINIT:
@@ -339,12 +347,12 @@ DEINIT:
     shutdown(sock, 0);
     close(sock);
   }
-  nanr_inform_complete(exit_code);
+  snail_inform_complete(exit_code);
   rpc_state.client_task = 0;
   vTaskDelete(NULL);
 }
 
-int rpc_connect(esp_netif_t *netif, ip_addr_t *target) {
+int rpc_connect(esp_netif_t *netif, ip_addr_t *target) { // TODO: Target is volatile+unecessary
   if (rpc_state.client_task != 0) {
     eTaskState s = eTaskGetState(rpc_state.client_task);
     if (s != eDeleted && s != eInvalid) {

@@ -124,7 +124,6 @@ void app_main(void) {
 #ifdef PROTO_SWAP
   uint64_t start = esp_timer_get_time();
   swap_init();
-  swap_seek();
   uint32_t delta = (esp_timer_get_time() - start) / 1000;
   ESP_LOGI(TAG, "Swap init + seek %"PRIu32" ms", delta);
   // state.status = SEEK;
@@ -146,8 +145,10 @@ void app_main(void) {
       else {
         uint16_t holdTime = xTaskGetTickCount() - pressedAt;
         if (holdTime > 100) { // Long Press
+#ifdef PROTO_NAN
           nanr_unpublish();
           nanr_unsubscribe();
+#endif
         } else {
           swap_polarity();
         }
@@ -174,10 +175,19 @@ void app_main(void) {
 }
 
 void swap_polarity() {
-  // if (state.status == SEEK) snail_transition(NOTIFY);
-  // else state.status = SEEK;
 #ifdef PROTO_NAN
   nanr_swap_polarity();
+#else
+  // if (state.status == SEEK) snail_transition(NOTIFY);
+  // else state.status = SEEK;
+#endif
+}
+
+void snail_inform_complete(const int exit_code) {
+#ifdef PROTO_NAN
+  nanr_inform_complete(exit_code);
+#else
+  // snail_transition(LEAVE);
 #endif
 }
 
@@ -208,6 +218,10 @@ peer_status snail_current_status(void) {
   return state.status;
 }
 
+int snail_transition_valid(peer_status to) {
+  return validate_transition(snail_current_status(), to);
+}
+
 /**
  * @brief State Transition Matrix
  * @returns 0: valid, -1: invalid source state, 1: invalid target state
@@ -226,7 +240,6 @@ int validate_transition(peer_status from, peer_status to) {
       switch (to) {
         case NOTIFY:
         case ATTACH:
-        case LEAVE: /* TEMP INVALID */
           return 0;
         default: return 1;
       }
@@ -234,7 +247,6 @@ int validate_transition(peer_status from, peer_status to) {
       switch (to) {
         case SEEK:
         case ATTACH:
-        case LEAVE: /* TEMP INVALID */
           return 0;
         default: return 1;
       }

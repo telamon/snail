@@ -7,8 +7,8 @@
  * CONFIG
  *--------------------*/
 #define DISPLAY_LED
-#define PROTO_NAN
-// #define PROTO_SWAP
+// #define PROTO_NAN
+#define PROTO_SWAP
 
 //--------------------
 #define delay(ms) vTaskDelay((ms) / portTICK_PERIOD_MS)
@@ -28,8 +28,10 @@ struct snail_state {
 };
 
 const char* status_str(peer_status s);
-int validate_transition(peer_status from, peer_status to);
 void snail_transition(peer_status target);
 peer_status snail_current_status(void);
+void snail_inform_complete(const int exit_code);
+int validate_transition(peer_status from, peer_status to);
+int snail_transition_valid(peer_status to);
 void swap_polarity();
 #endif

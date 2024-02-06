@@ -1,9 +1,9 @@
 # SNAIL
-`status: release 0`
+`status: research iteraton: 1`
 
 snail is a relayed protocol for portable unsupervised sneakernet devices.
 
-This repository contains an implemenation that uses Wifi NAN for peer discovery and communication
+This repository contains an implemenation that uses Wifi ~~NAN~~ for peer discovery and communication
 in order to iterate and simplify.
 
 ## What you need
@@ -53,7 +53,18 @@ Interaction with a smartphone.
 - USB-C
 - ~~[Wifi Direct](https://github.com/espressif/esp-idf/issues/6522#issuecomment-1878635833)~~
 
-## References
+## References / Journey
+
+`Iteration 1` - Bye NAN hello SWAP
+
+Nan is truly glitchy. It's cool to sync clocks over a wide area but
+it does not relay data or service info.
+We're not building a mesh, we're bulding a Swarm.
+
+- OUI & VSIE allows snail beacons to be distinguished between nodes.
+- The dual v-netif APSTA mode allows much more efficient discovery and exchange.
+- Always on AP solves mobile connectivity.
+
 
 `Iteration 0` - Exploring the boundaries of Wifi NAN
 
@@ -77,6 +88,5 @@ bc1qqjgz9fqqxj7kndqelecxmdtqgvtzqrukma5599
 
 ## License
 
-2024 © Tony Ivanov - The code needs cleanup to meet the standards of AGPLv3,  
-so this version is made available as MIT.
+2024 © Tony Ivanov - MPL Decent Labs
 
