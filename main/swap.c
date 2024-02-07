@@ -77,23 +77,7 @@ static struct swap_state {
   }
 };
 
-#ifdef USE_V6
-// Use link-local ipv6
-static const char *IP_AP = "fe80::dead:beef";
-static esp_ip6_addr_t ap_addr;
-#else
-// APIPA range: 169.254.0.1/16
 #define IP_MASK 0x00ffffff
-#ifdef USE_STATIC_IP
-static uint32_t bssid_to_ipv4(const uint8_t *bssid) {
-  uint32_t addr = ((bssid[5] ^ bssid[0]) << 24)
-    | ((bssid[4] ^ bssid[1]) << 16)
-    | ((bssid[3] ^ bssid[2]) << 8)
-    | 10;
-  if ((addr & ~IP_MASK) == ~IP_MASK) addr -= 0x010000;
-  return addr;
-}
-#else
 static uint32_t random_ap_ipv4() {
   esp_random();
   esp_random();
@@ -101,18 +85,11 @@ static uint32_t random_ap_ipv4() {
     | (1 << 24)
     | 10;
 }
-#endif
 
 static esp_netif_ip_info_t ip_info_ap = {
   .netmask.addr = IP_MASK,
   .gw.addr = 0
 };
-static esp_netif_ip_info_t ip_info_sta = {
-  .netmask.addr = IP_MASK,
-  .gw.addr = 0
-};
-#endif
-
 
 /**
  * @param i out, contains number of peers discovered
@@ -253,18 +230,6 @@ static void wifi_event_handler(
     ) {
   if (event_base == IP_EVENT) {
     switch (event_id) {
-#ifdef USE_V6
-      case IP_EVENT_GOT_IP6: {
-        ip_event_got_ip6_t *event = (ip_event_got_ip6_t *)event_data;
-        if (event->esp_netif == state.netif_sta) {
-          ESP_LOGI(TAG, "EV_STA6: Station Got IP6[%i]: "IPV6STR, event->ip_index, IPV62STR(event->ip6_info.ip));
-          /* Unblock Initiator/rpc_connect */
-          xEventGroupSetBits(state.events, EV_IP_LINK_UP);
-        } else {
-          ESP_LOGI(TAG, "EV_AP6: SoftAP Got IP6[%i]: "IPV6STR, event->ip_index, IPV62STR(event->ip6_info.ip));
-        }
-      } break;
-#endif
       case IP_EVENT_STA_GOT_IP: {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
         ESP_LOGI(TAG, "EV_STA: Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
@@ -280,9 +245,6 @@ static void wifi_event_handler(
     switch(event_id) {
       case WIFI_EVENT_AP_START:
         ESP_LOGI(TAG, "EV_AP: Soft-AP started");
-#ifdef USE_V6
-        ESP_ERROR_CHECK(esp_netif_create_ip6_linklocal(state.netif_ap));
-#endif
         break;
       case WIFI_EVENT_AP_STOP: /**< Soft-AP stop */
         ESP_LOGI(TAG, "EV_AP: Soft-AP stopped");
@@ -310,13 +272,7 @@ static void wifi_event_handler(
 
       case WIFI_EVENT_STA_CONNECTED: {
         wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t*) event_data;
-#ifdef USE_V6
-        /* Set IPv6 Linklocal */
-        ESP_LOGI(TAG, "EV_STA6: Connected to "MACSTR"! generating linklocal", MAC2STR(event->bssid));
-        ESP_ERROR_CHECK(esp_netif_create_ip6_linklocal(state.netif_sta));
-#else
         ESP_LOGI(TAG, "EV_STA: Connected to "MACSTR, MAC2STR(event->bssid));
-#endif
       } break;
       // TODO case WIFI_EVENT_STA_DISCONNECTED:
       default:
@@ -403,20 +359,12 @@ static void swap_seeker_task (void* pvParams) {
           }
           xEventGroupClearBits(state.events, EV_IP_LINK_UP);
           ESP_LOGI(TAG, "STA [initiator] IP link up! rpc_connect() imminent");
-#ifdef USE_V6
-          int res = rpc_connect6(state.netif_sta);
-#else
-          ip_addr_t target;
-#ifdef USE_STATIC_IP
-          /* Use deterministric address */
-          target.u_addr.ip4.addr = bssid_to_ipv4(state.peers[state.initiate_to].bssid);
-#else
-          /* Connect to gw-addr */
+          /* Connect to gateway-addr */
+          ip_addr_t target={0};
+          esp_netif_ip_info_t ip_info_sta = {0};
           ESP_ERROR_CHECK(esp_netif_get_ip_info(state.netif_sta, &ip_info_sta));
           target.u_addr.ip4.addr = ip_info_sta.gw.addr;
-#endif
           int res = rpc_connect(state.netif_sta, &target);
-#endif
           if (res != ESP_OK) {
             ESP_LOGE(TAG, "Failed spawning client, exit: %i", res);
             snail_transition(LEAVE);
@@ -459,52 +407,6 @@ static void swap_seeker_task (void* pvParams) {
   vTaskDelete(NULL);
 }
 
-static esp_err_t create_interfaces(esp_netif_t **p_netif_ap, esp_netif_t **p_netif_sta) {
-  if (true) { // Use defaults;
-    *p_netif_ap = esp_netif_create_default_wifi_ap();
-    *p_netif_sta = esp_netif_create_default_wifi_sta();
-    return ESP_OK;
-  }
-
-#define DHCPS 1
-#define DHCPC 0
-  // Create "almost" default AP
-  esp_netif_inherent_config_t netif_cfg;
-  memcpy(&netif_cfg, ESP_NETIF_BASE_DEFAULT_WIFI_AP, sizeof(netif_cfg));
-  if (!DHCPS) netif_cfg.flags &= ~ESP_NETIF_DHCP_SERVER;
-  esp_netif_config_t cfg_ap = {
-    .base = &netif_cfg,
-    .stack = ESP_NETIF_NETSTACK_DEFAULT_WIFI_AP,
-  };
-  esp_netif_t *netif_ap = esp_netif_new(&cfg_ap);
-  ESP_ERROR_CHECK(netif_ap == NULL ? ESP_FAIL : ESP_OK);
-  ESP_ERROR_CHECK(esp_netif_attach_wifi_ap(netif_ap));
-  ESP_ERROR_CHECK(esp_wifi_set_default_wifi_ap_handlers());
-
-  // .Stop DHCP server to keep the ESP_NETIF_DHCP_STOPPED state
-  if (!DHCPS) ESP_ERROR_CHECK(esp_netif_dhcps_stop(netif_ap));
-
-  // Create "almost" default station, but with un-flagged DHCP client
-  memcpy(&netif_cfg, ESP_NETIF_BASE_DEFAULT_WIFI_STA, sizeof(netif_cfg));
-  if (!DHCPC) netif_cfg.flags &= ~ESP_NETIF_DHCP_CLIENT;
-  netif_cfg.route_prio += 5; /* Increase Priority */
-  esp_netif_config_t cfg_sta = {
-    .base = &netif_cfg,
-    .stack = ESP_NETIF_NETSTACK_DEFAULT_WIFI_STA,
-  };
-  esp_netif_t *netif_sta = esp_netif_new(&cfg_sta);
-  ESP_ERROR_CHECK(netif_sta == NULL ? ESP_FAIL : ESP_OK);
-  ESP_ERROR_CHECK(esp_netif_attach_wifi_station(netif_sta));
-  ESP_ERROR_CHECK(esp_wifi_set_default_wifi_sta_handlers());
-
-  // stop DHCP client
-  if (!DHCPC) ESP_ERROR_CHECK(esp_netif_dhcpc_stop(netif_sta));
-
-  if (p_netif_sta) *p_netif_sta = netif_sta;
-  if (p_netif_ap) *p_netif_ap = netif_ap;
-  return ESP_OK;
-}
-
 void swap_init(void) {
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -526,25 +428,24 @@ void swap_init(void) {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA)); /* AP + Station */
 
   /* Initalize NICs */
-  ESP_ERROR_CHECK(create_interfaces(&state.netif_ap, &state.netif_sta));
+  state.netif_ap = esp_netif_create_default_wifi_ap();
+  state.netif_sta = esp_netif_create_default_wifi_sta();
 
   /* Initialize Event Handler */
   state.events = xEventGroupCreate();
   #define add_handler(a, b, c) ESP_ERROR_CHECK(esp_event_handler_instance_register((a), (b), (c), NULL, NULL))
   add_handler(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler);
   add_handler(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler);
-#ifdef USE_V6
-  add_handler(IP_EVENT, IP_EVENT_GOT_IP6, &wifi_event_handler);
-#endif
 
   /* Init Access Point */
   init_softap(); // Mostly Deprecated;
 
+  /* Init Peer discovery/registry */
+  esp_wifi_set_vendor_ie_cb(&vsie_callback, NULL);
+
   /* Boot up Radios */
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  /* Init Peer discovery/registry */
-  esp_wifi_set_vendor_ie_cb(&vsie_callback, NULL);
 
   rpc_listen(state.netif_ap);
 
@@ -574,5 +475,3 @@ void swap_deinit(void) {
   // Where is esp_wifi_unset_vendor_ie_cb() ?
   memset(&state, 0, sizeof(state));
 }
-
-

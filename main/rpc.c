@@ -148,7 +148,7 @@ int dummy_reply (bool initiator, struct tlv_header *io_header, char *io_message)
 
 void dummy_deinit(bool initator, int exit_code){
   int64_t duration = esp_timer_get_time() - dummy_bench.start;
-  ESP_LOGI(TAG, "Throughput test complete [%i] exit: %i (%"PRId64" ms) [RX %.2f KB/s, TX: %.2f KB/s]",
+  ESP_LOGW(TAG, "Throughput test complete [%i] exit: %i (%"PRId64" ms) [RX %.2f KB/s, TX: %.2f KB/s]",
       initator,
       exit_code,
       duration / 1000,
@@ -279,11 +279,20 @@ static void tcp_server_task(void *pvParameters) {
         int sock = accept(rpc_state.listen_sock, (struct sockaddr *)&source_addr, &addr_len);
         if (sock < 0) {
             ESP_LOGE(TAG, "Unable to accept connection: (%d) %s", errno, lwip_strerr(errno));
-            break;
+            goto DROP_CONNECTION;
         }
+        // Convert ip address to string
+        if (source_addr.ss_family == PF_INET){
+          inet_ntoa_r(((struct sockaddr_in *)&source_addr)->sin_addr, addr_str, sizeof(addr_str) - 1);
+        }
+        if (source_addr.ss_family == PF_INET6) {
+          inet6_ntoa_r(((struct sockaddr_in6 *)&source_addr)->sin6_addr, addr_str, sizeof(addr_str) - 1);
+        }
+        ESP_LOGI(TAG, "Incoming connection: %s", addr_str);
+
         /* Prevent simultaneous peer connections */
         if (snail_transition_valid(INFORM) != 0) {
-          ESP_LOGW(TAG, "Status Busy (%s), additional connection dropped", status_str(snail_current_status()));
+          ESP_LOGW(TAG, "Status Busy (%s), %s dropped", status_str(snail_current_status()), addr_str);
           goto DROP_CONNECTION;
         }
 
@@ -296,15 +305,6 @@ static void tcp_server_task(void *pvParameters) {
         setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keepCount, sizeof(int));
         struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        // Convert ip address to string
-        if (source_addr.ss_family == PF_INET) {
-            inet_ntoa_r(((struct sockaddr_in *)&source_addr)->sin_addr, addr_str, sizeof(addr_str) - 1);
-        }
-        if (source_addr.ss_family == PF_INET6) {
-            inet6_ntoa_r(((struct sockaddr_in6 *)&source_addr)->sin6_addr, addr_str, sizeof(addr_str) - 1);
-        }
-
-        ESP_LOGI(TAG, "Socket accepted ip address: %s", addr_str);
         int ret = do_communicate(false, sock);
         snail_inform_complete(ret);
 DROP_CONNECTION:
@@ -394,37 +394,3 @@ int rpc_connect(esp_netif_t *netif, ip_addr_t *peer) {
   ESP_LOGI(TAG, "Successfully[%i] connected", sock);
   return spawn_client(sock);
 }
-
-/* Test IPv6 Connection */
-int rpc_connect6(esp_netif_t *netif) {
-  // const char *IP_AP = "::ffff:169.254.0.1";
-  const char *IP_AP = "::ffff:192.168.4.1";
-  struct sockaddr_in6 remote = {
-    .sin6_family = AF_INET6,
-    .sin6_port = htons(PORT),
-    .sin6_scope_id = esp_netif_get_netif_impl_index(netif),
-  };
-  int err = inet_pton(AF_INET6, IP_AP, &remote.sin6_addr);
-  if (err != 1) {
-    ESP_LOGE(TAG, "client6: Parse Address Failed %i", err);
-    return -1;
-  }
-
-  int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if (sock < 0) {
-    ESP_LOGE(TAG, "client6: Create socket failed %i", sock);
-    return -1;
-  }
-  int fails = 0;
-  ESP_LOGW(TAG, "Attempting to Connect to %s", IP_AP);
-  do {
-    err = connect(sock, (struct sockaddr*)&remote, sizeof(remote));
-    if (!err) ESP_LOGW(TAG, "===== CONNECTION SUCCESS!! ====");
-    else ESP_LOGE(TAG, "client6: socket[%i] connect failed: (%d) %s", sock, err, lwip_strerr(err));
-    if (100 < fails++) break;
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
-  } while (err != 0);
-  return err;
-}
-
-
