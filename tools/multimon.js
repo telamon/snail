@@ -18,7 +18,7 @@ function open (file) {
   const port = new SerialPort({ path: file, baudRate: BAUD })
   const parser = port.pipe(new ReadlineParser({ delimiter: '\n' }))
   parser.on('data', forward)
-  const log = debug(`NODE${node}`)
+  const log = debug(`NODE#${node}`)
   if (V) log.enabled = true
 
   function forward (line) {
@@ -55,9 +55,12 @@ process.on('SIGINT', () => {
   process.exit(0)
 });
 
-const devices = (await new Promise((resolve, reject) => readdir('/dev', { withFileTypes: true }, (err, res) => err ? reject(err) : resolve(res))))
+const dir = '/dev'
+const devices = (await new Promise((resolve, reject) => readdir(dir, { withFileTypes: true }, (err, res) => err ? reject(err) : resolve(res))))
   .filter(ent => /^ttyUSB\d+$/.test(ent.name))
-  .map(ent => ent.path + '/' + ent.name)
 
-for (const dev of devices) open(dev)
+for (const ent of devices) {
+  const dev = dir + '/' + ent.name
+  open(dev)
+}
 

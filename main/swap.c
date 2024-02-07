@@ -16,6 +16,8 @@
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "esp_mac.h"
+#include "esp_random.h"
+#include "assert.h"
 
 #define TAG "swap.c"
 #define SSID "snail"
@@ -23,7 +25,7 @@
 #define EV_IP_LINK_UP BIT0
 #define EV_AP_NODE_ATTACHED BIT1
 /* Spend 2s waiting for peers between scans */
-#define NOTIFY_TIME 4000
+#define NOTIFY_TIME 6000
 
 static char OUI[3] = {0xAA, 0xAA, 0xAA};
 /* Size of max-scanned peers */
@@ -46,10 +48,10 @@ static struct swap_state {
   TaskHandle_t seeker_task;
   wifi_config_t ap_config;
   wifi_config_t sta_config;
-  uint8_t sta_mac[6];
-  bool initiator;
+  int initiate_to;
   struct peer_info peers[N_PEERS];
 } state = {
+  .initiate_to = -1,
   .ap_config = {
     .ap = {
       .ssid = SSID,
@@ -61,7 +63,7 @@ static struct swap_state {
       /* power consumption tuning */
       .beacon_interval = 200,
       /* Cloak beacons */
-      .ssid_hidden = 1
+      .ssid_hidden = 0
     },
   },
   .sta_config = {
@@ -75,24 +77,47 @@ static struct swap_state {
   }
 };
 
+#ifdef USE_V6
+// Use link-local ipv6
+static const char *IP_AP = "fe80::dead:beef";
+static esp_ip6_addr_t ap_addr;
+#else
 // APIPA range: 169.254.0.1/16
-#define IP_AP   0x0100fea9
-#define IP_MASK 0x0000ffff
-static const esp_netif_ip_info_t ip_info_ap = {
-  .ip.addr = IP_AP,
+#define IP_MASK 0x00ffffff
+#ifdef USE_STATIC_IP
+static uint32_t bssid_to_ipv4(const uint8_t *bssid) {
+  uint32_t addr = ((bssid[5] ^ bssid[0]) << 24)
+    | ((bssid[4] ^ bssid[1]) << 16)
+    | ((bssid[3] ^ bssid[2]) << 8)
+    | 10;
+  if ((addr & ~IP_MASK) == ~IP_MASK) addr -= 0x010000;
+  return addr;
+}
+#else
+static uint32_t random_ap_ipv4() {
+  esp_random();
+  esp_random();
+  return (esp_random() & 0x00ffff00)
+    | (1 << 24)
+    | 10;
+}
+#endif
+
+static esp_netif_ip_info_t ip_info_ap = {
   .netmask.addr = IP_MASK,
   .gw.addr = 0
 };
 static esp_netif_ip_info_t ip_info_sta = {
-  .ip.addr = IP_AP + 1, // dynamically set by sta_connect()
   .netmask.addr = IP_MASK,
-  .gw.addr = IP_AP
+  .gw.addr = 0
 };
+#endif
+
 
 /**
  * @param i out, contains number of peers discovered
  */
-int peer_select_num (uint16_t *i) {
+static int peer_select_num (uint16_t *i) {
   int best = *i = 0;
   for (; *i < N_PEERS; ++*i) {
     int is_empty = 1;
@@ -154,23 +179,21 @@ static void vsie_callback (
 
 
 /* Initialize Access Point */
-void init_softap(void) {
+static void init_softap(void) {
   wifi_config_t *config = &state.ap_config;
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, config));
   // esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_LR); // Weird "patended" longrange-mode (maybe periodically enable)
-
+#ifndef USE_V6
   /* Reconfigure IP & DHCP-server */
+  uint8_t bssid[6];
+  esp_wifi_get_mac(WIFI_IF_AP, bssid);
+  ip_info_ap.ip.addr = random_ap_ipv4(); // bssid_to_ipv4(bssid);
+  ip_info_ap.gw.addr = ip_info_ap.ip.addr;
   ESP_ERROR_CHECK(esp_netif_dhcps_stop(state.netif_ap));
   ESP_ERROR_CHECK(esp_netif_set_ip_info(state.netif_ap, &ip_info_ap));
   ESP_ERROR_CHECK(esp_netif_dhcps_start(state.netif_ap));
-
-  ESP_LOGI(TAG, "init_softap finished. SSID:%s channel:%d, ip: ", SSID, config->ap.channel);
-
-  /* Enable napt on the AP netif (Network Address & Port Translation) */
-  /* if (esp_netif_napt_enable(state.netif_ap) != ESP_OK) {
-    ESP_LOGE(TAG, "NAPT not enabled on the netif: %p", state.netif_ap);
-  } */
-
+  ESP_LOGI(TAG, "init_softap finished. SSID:%s channel:%d ip:"IPSTR, SSID, config->ap.channel, IP2STR(&ip_info_ap.ip));
+#endif
   /* Custom data in AP-beacons */
   // TODO: move to update_beacon_info() and call at beginning of every NOTIFY
   // esp_wifi_80211_tx(WIFI_IF_AP, &buffer, length, true); // ulitmate fallback raw frames.
@@ -186,33 +209,37 @@ void init_softap(void) {
 
 
 /* Reconfigure station to different Access Point */
-int sta_connect(const uint8_t *bssid) {
+static int sta_associate(const uint8_t *bssid) {
   wifi_config_t *config = &state.sta_config;
-  ESP_LOGI(TAG, "sta_connect("MACSTR")", MAC2STR(bssid));
+  ESP_LOGI(TAG, "sta_associate("MACSTR")", MAC2STR(bssid));
   memcpy(config->sta.bssid, bssid, sizeof(config->sta.bssid));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, config));
   ESP_LOGI(TAG, "station reconfigured to "MACSTR, MAC2STR(config->sta.bssid));
 
+#ifdef USE_STATIC_IP
   /* Stop DHCP-client */
   int err = esp_netif_dhcpc_stop(state.netif_sta); // Disable to-begin-with?
   if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
     ESP_ERROR_CHECK(err);
   }
-  // esp_netif_dhcpc_option();
-
-  /* Set static address */
-  ESP_ERROR_CHECK(esp_netif_get_mac(state.netif_sta, state.sta_mac));
-  IP4_ADDR(&ip_info_sta.ip, 169, 254, state.sta_mac[4], state.sta_mac[5] == 1 ? 2: state.sta_mac[5]);
-  ESP_LOGI(TAG, "STA_IP_INFO mac: "MACSTR", ip: "IPSTR,
-      MAC2STR(state.sta_mac),
-      IP2STR(&ip_info_sta.ip));
+#ifndef USE_V6
+  /* Set static address IPv4*/
+  uint8_t sta_mac[6];
+  ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, sta_mac));
+  ip_info_sta.ip.addr = bssid_to_ipv4(sta_mac);
+  ESP_LOGI(TAG, "STA: reconfiguring static  ip: "IPSTR", mac: "MACSTR,
+      IP2STR(&ip_info_sta.ip),
+      MAC2STR(sta_mac));
   ESP_ERROR_CHECK(esp_netif_set_ip_info(state.netif_sta, &ip_info_sta));
+  // xEventGroupSetBits(state.events, EV_IP_LINK_UP); /* CustomSTA never triggers GOT_IP event */
+#endif
+#endif
 
   /* Connect */
-  err = esp_wifi_connect();
-  if (err == ESP_OK) ESP_LOGI(TAG, "sta_connect() succeeded");
+  int err = esp_wifi_connect();
+  if (err == ESP_OK) ESP_LOGI(TAG, "sta_associate("MACSTR") success", MAC2STR(bssid));
   else {
-    ESP_LOGE(TAG, "sta_connect() failed %i", err);
+    ESP_LOGE(TAG, "sta_associate("MACSTR") failed %i", MAC2STR(bssid), err);
     ESP_ERROR_CHECK(err);
   }
   return err;
@@ -226,6 +253,18 @@ static void wifi_event_handler(
     ) {
   if (event_base == IP_EVENT) {
     switch (event_id) {
+#ifdef USE_V6
+      case IP_EVENT_GOT_IP6: {
+        ip_event_got_ip6_t *event = (ip_event_got_ip6_t *)event_data;
+        if (event->esp_netif == state.netif_sta) {
+          ESP_LOGI(TAG, "EV_STA6: Station Got IP6[%i]: "IPV6STR, event->ip_index, IPV62STR(event->ip6_info.ip));
+          /* Unblock Initiator/rpc_connect */
+          xEventGroupSetBits(state.events, EV_IP_LINK_UP);
+        } else {
+          ESP_LOGI(TAG, "EV_AP6: SoftAP Got IP6[%i]: "IPV6STR, event->ip_index, IPV62STR(event->ip6_info.ip));
+        }
+      } break;
+#endif
       case IP_EVENT_STA_GOT_IP: {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
         ESP_LOGI(TAG, "EV_STA: Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
@@ -239,6 +278,15 @@ static void wifi_event_handler(
 
   if (event_base == WIFI_EVENT) {
     switch(event_id) {
+      case WIFI_EVENT_AP_START:
+        ESP_LOGI(TAG, "EV_AP: Soft-AP started");
+#ifdef USE_V6
+        ESP_ERROR_CHECK(esp_netif_create_ip6_linklocal(state.netif_ap));
+#endif
+        break;
+      case WIFI_EVENT_AP_STOP: /**< Soft-AP stop */
+        ESP_LOGI(TAG, "EV_AP: Soft-AP stopped");
+        break;
       case WIFI_EVENT_AP_STACONNECTED:{
         wifi_event_ap_staconnected_t *event = (wifi_event_ap_staconnected_t *) event_data;
         ESP_LOGI(TAG, "EV_AP: Station "MACSTR" joined, AID=%d",MAC2STR(event->mac), event->aid);
@@ -260,9 +308,17 @@ static void wifi_event_handler(
         // xEventGroupSetBits(state.events, EV_SCAN_COMPLETE);
       } break;
 
-      case WIFI_EVENT_STA_CONNECTED:
-        ESP_LOGI(TAG, "EV_STA: Connected!");
-        break;
+      case WIFI_EVENT_STA_CONNECTED: {
+        wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t*) event_data;
+#ifdef USE_V6
+        /* Set IPv6 Linklocal */
+        ESP_LOGI(TAG, "EV_STA6: Connected to "MACSTR"! generating linklocal", MAC2STR(event->bssid));
+        ESP_ERROR_CHECK(esp_netif_create_ip6_linklocal(state.netif_sta));
+#else
+        ESP_LOGI(TAG, "EV_STA: Connected to "MACSTR, MAC2STR(event->bssid));
+#endif
+      } break;
+      // TODO case WIFI_EVENT_STA_DISCONNECTED:
       default:
         ESP_LOGW(TAG, "EV_WIFI unknown event, base: %s, id: %"PRIu32, event_base, event_id);
         break;
@@ -273,7 +329,7 @@ static void wifi_event_handler(
 #define MAX_SCAN 10
 static wifi_ap_record_t records[MAX_SCAN];
 
-int swap_seek_scan(void) {
+static int swap_seek_scan(void) {
   wifi_scan_config_t scan_conf = {
     .channel = 6,
     .show_hidden = true,
@@ -306,20 +362,19 @@ int swap_seek_scan(void) {
 
   int ret = -1;
   /* Initiate Connection */
-  if (selected_peer >= 0) {
-    ret = sta_connect(state.peers[selected_peer].bssid); /* Connect */
-  }
-  /* Clear/ Discard scanned registry; TODO: Keep it via (n_beacons + last_seen)*/
-  memset(state.peers, 0, sizeof(struct peer_info) * N_PEERS);
+  if (selected_peer >= 0) ret = sta_associate(state.peers[selected_peer].bssid); /* Connect */
+  state.initiate_to = selected_peer;
   return ret;
 }
 
 static void swap_seeker_task (void* pvParams) {
+  /* kinda silly, but with STA-AP mode we SEEK & NOTIFY simultaneously <3 */
+  snail_transition(SEEK);
+
   while (1) {
     peer_status s = snail_current_status();
     switch (s) {
       case SEEK: {
-        state.initiator = true;
         UBaseType_t uxHighWaterMark;
         uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
         ESP_LOGW(TAG, "free stack: %i WORD\n", uxHighWaterMark);
@@ -330,7 +385,7 @@ static void swap_seeker_task (void* pvParams) {
       } break;
 
       case NOTIFY: {
-        state.initiator = false;
+        state.initiate_to = -1;
         EventBits_t bits = xEventGroupWaitBits(state.events, EV_AP_NODE_ATTACHED, pdFALSE, pdFALSE, NOTIFY_TIME / portTICK_PERIOD_MS);
         if (bits & EV_AP_NODE_ATTACHED) {
           xEventGroupClearBits(state.events, EV_AP_NODE_ATTACHED);
@@ -339,22 +394,29 @@ static void swap_seeker_task (void* pvParams) {
       } break;
 
       case ATTACH: {
-        if (state.initiator) {
-          ESP_LOGI(TAG, "Waiting link");
+        if (state.initiate_to != -1) {
+          ESP_LOGI(TAG, "STA [Initiator] Waiting for link up");
           EventBits_t bits = xEventGroupWaitBits(state.events, EV_IP_LINK_UP, pdFALSE, pdFALSE, 10000 / portTICK_PERIOD_MS);
           if (!(bits & EV_IP_LINK_UP)) {
             snail_transition(LEAVE); /* Give up */
             continue;
           }
           xEventGroupClearBits(state.events, EV_IP_LINK_UP);
-          ESP_LOGI(TAG, "STA: IP link up! rpc_connect() imminent");
-
-          ip_addr_t target = {
-            .u_addr.ip4.addr = IP_AP //192.168.4.1
-          }; // TODO: IPv6
-
-          // TODO: ptr of target ends up in rpc-state and corrupts after loop-iter
+          ESP_LOGI(TAG, "STA [initiator] IP link up! rpc_connect() imminent");
+#ifdef USE_V6
+          int res = rpc_connect6(state.netif_sta);
+#else
+          ip_addr_t target;
+#ifdef USE_STATIC_IP
+          /* Use deterministric address */
+          target.u_addr.ip4.addr = bssid_to_ipv4(state.peers[state.initiate_to].bssid);
+#else
+          /* Connect to gw-addr */
+          ESP_ERROR_CHECK(esp_netif_get_ip_info(state.netif_sta, &ip_info_sta));
+          target.u_addr.ip4.addr = ip_info_sta.gw.addr;
+#endif
           int res = rpc_connect(state.netif_sta, &target);
+#endif
           if (res != ESP_OK) {
             ESP_LOGE(TAG, "Failed spawning client, exit: %i", res);
             snail_transition(LEAVE);
@@ -363,7 +425,7 @@ static void swap_seeker_task (void* pvParams) {
         }
 
         // Both initiator|non-initiator
-        ESP_LOGI(TAG, "Waiting for socket, initiator: %i", state.initiator);
+        ESP_LOGI(TAG, "Waiting for socket, initiator: %i, PEER%i:", state.initiate_to != -1, state.initiate_to);
         int res = rpc_wait_for_peer_socket(10000 / portTICK_PERIOD_MS);
         if (res == ESP_OK) {
           snail_transition(INFORM);
@@ -378,11 +440,12 @@ static void swap_seeker_task (void* pvParams) {
         break;
 
       case LEAVE: {
-        ESP_LOGI(TAG, "Leaving, was initator: %i", state.initiator);
-        if (state.initiator){
+        ESP_LOGI(TAG, "Leaving, was initator: %i", state.initiate_to);
+        if (state.initiate_to != -1){
           int err = esp_wifi_disconnect();
           ESP_ERROR_CHECK_WITHOUT_ABORT(err);
         }
+        state.initiate_to = -1;
         /* Not sure- drop all accumulated events? */
         xEventGroupClearBits(state.events, EV_AP_NODE_ATTACHED);
         snail_transition(NOTIFY);
@@ -394,6 +457,52 @@ static void swap_seeker_task (void* pvParams) {
   }
 // DEINIT:
   vTaskDelete(NULL);
+}
+
+static esp_err_t create_interfaces(esp_netif_t **p_netif_ap, esp_netif_t **p_netif_sta) {
+  if (true) { // Use defaults;
+    *p_netif_ap = esp_netif_create_default_wifi_ap();
+    *p_netif_sta = esp_netif_create_default_wifi_sta();
+    return ESP_OK;
+  }
+
+#define DHCPS 1
+#define DHCPC 0
+  // Create "almost" default AP
+  esp_netif_inherent_config_t netif_cfg;
+  memcpy(&netif_cfg, ESP_NETIF_BASE_DEFAULT_WIFI_AP, sizeof(netif_cfg));
+  if (!DHCPS) netif_cfg.flags &= ~ESP_NETIF_DHCP_SERVER;
+  esp_netif_config_t cfg_ap = {
+    .base = &netif_cfg,
+    .stack = ESP_NETIF_NETSTACK_DEFAULT_WIFI_AP,
+  };
+  esp_netif_t *netif_ap = esp_netif_new(&cfg_ap);
+  ESP_ERROR_CHECK(netif_ap == NULL ? ESP_FAIL : ESP_OK);
+  ESP_ERROR_CHECK(esp_netif_attach_wifi_ap(netif_ap));
+  ESP_ERROR_CHECK(esp_wifi_set_default_wifi_ap_handlers());
+
+  // .Stop DHCP server to keep the ESP_NETIF_DHCP_STOPPED state
+  if (!DHCPS) ESP_ERROR_CHECK(esp_netif_dhcps_stop(netif_ap));
+
+  // Create "almost" default station, but with un-flagged DHCP client
+  memcpy(&netif_cfg, ESP_NETIF_BASE_DEFAULT_WIFI_STA, sizeof(netif_cfg));
+  if (!DHCPC) netif_cfg.flags &= ~ESP_NETIF_DHCP_CLIENT;
+  netif_cfg.route_prio += 5; /* Increase Priority */
+  esp_netif_config_t cfg_sta = {
+    .base = &netif_cfg,
+    .stack = ESP_NETIF_NETSTACK_DEFAULT_WIFI_STA,
+  };
+  esp_netif_t *netif_sta = esp_netif_new(&cfg_sta);
+  ESP_ERROR_CHECK(netif_sta == NULL ? ESP_FAIL : ESP_OK);
+  ESP_ERROR_CHECK(esp_netif_attach_wifi_station(netif_sta));
+  ESP_ERROR_CHECK(esp_wifi_set_default_wifi_sta_handlers());
+
+  // stop DHCP client
+  if (!DHCPC) ESP_ERROR_CHECK(esp_netif_dhcpc_stop(netif_sta));
+
+  if (p_netif_sta) *p_netif_sta = netif_sta;
+  if (p_netif_ap) *p_netif_ap = netif_ap;
+  return ESP_OK;
 }
 
 void swap_init(void) {
@@ -417,42 +526,30 @@ void swap_init(void) {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA)); /* AP + Station */
 
   /* Initalize NICs */
-  state.netif_ap = esp_netif_create_default_wifi_ap();
-  state.netif_sta = esp_netif_create_default_wifi_sta();
+  ESP_ERROR_CHECK(create_interfaces(&state.netif_ap, &state.netif_sta));
 
   /* Initialize Event Handler */
   state.events = xEventGroupCreate();
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-    WIFI_EVENT,
-    ESP_EVENT_ANY_ID,
-    &wifi_event_handler,
-    NULL,
-    NULL
-  ));
-
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-    IP_EVENT,
-    IP_EVENT_STA_GOT_IP,
-    &wifi_event_handler,
-    NULL,
-    NULL
-  ));
+  #define add_handler(a, b, c) ESP_ERROR_CHECK(esp_event_handler_instance_register((a), (b), (c), NULL, NULL))
+  add_handler(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler);
+  add_handler(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler);
+#ifdef USE_V6
+  add_handler(IP_EVENT, IP_EVENT_GOT_IP6, &wifi_event_handler);
+#endif
 
   /* Init Access Point */
-  init_softap();
+  init_softap(); // Mostly Deprecated;
+
+  /* Boot up Radios */
   ESP_ERROR_CHECK(esp_wifi_start());
 
   /* Init Peer discovery/registry */
-  // state.peers = malloc(sizeof(struct peer_info) * N_PEERS);
-  // ESP_LOGW(TAG, "REGISTRY peer ptr %p", state.peers);
   esp_wifi_set_vendor_ie_cb(&vsie_callback, NULL);
 
-  rpc_listen();
+  rpc_listen(state.netif_ap);
 
-  xTaskCreate(swap_seeker_task, "swap_seeker", 2048, NULL, 5, &state.seeker_task);
-
-  /* kinda silly,but with STA-AP mode we SEEK & NOTIFY simultaneously <3 */
-  snail_transition(SEEK);
+  /* Initialize task */
+  xTaskCreate(swap_seeker_task, "swap_seeker", 4096, NULL, 5, &state.seeker_task);
 }
 
 void swap_deinit(void) {
@@ -477,3 +574,5 @@ void swap_deinit(void) {
   // Where is esp_wifi_unset_vendor_ie_cb() ?
   memset(&state, 0, sizeof(state));
 }
+
+

@@ -21,6 +21,7 @@ enum CMD_TYPE {
   CMD_FIRMWARE = 71
 };
 int rpc_connect(esp_netif_t *interface, ip_addr_t *target_address);
+int rpc_connect6(esp_netif_t *interface);
 int rpc_wait_for_peer_socket(TickType_t timeout);
-void rpc_listen(void);
+void rpc_listen(esp_netif_t *interface);
 #endif

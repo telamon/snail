@@ -1,3 +1,7 @@
+/**
+ * This file is scheduled for complete rewrite
+ */
+#include "esp_wifi_types.h"
 #include "snail.h"
 #ifdef PROTO_NAN
 #include "nanr.h"
@@ -8,6 +12,7 @@
 #include "lwip/sockets.h"
 #include "lwip/sys.h"
 #include <lwip/netdb.h>
+#include <arpa/inet.h>
 // #include "repo.h"
 #include "esp_timer.h"
 #define TAG "rpc.c"
@@ -17,18 +22,20 @@
 #define KEEPALIVE_IDLE              6
 #define KEEPALIVE_INTERVAL          KEEPALIVE_IDLE
 #define KEEPALIVE_COUNT             3
+#define RECV_TIMEOUT                30
 
 #define EV_RPC_PEER_SOCKET BIT1
 #define XF_BUFFER_SIZE 5000
 static struct {
   EventGroupHandle_t event_group;
   TaskHandle_t server_task;
+  esp_netif_t *netif_ap;
   bool listening;
   int listen_sock;
 
   TaskHandle_t client_task;
-  esp_netif_t *netif;
-  ip_addr_t *addr;
+  esp_netif_t *netif_sta;
+
   char rx_buffer[XF_BUFFER_SIZE];
 } rpc_state;
 
@@ -94,8 +101,8 @@ static int recv_msg (int socket) {
 
 struct conversation_handlers {
   void (*on_init) (bool initiator, uint16_t MAX_SIZE);
-  int (*on_message) (struct tlv_header *io_header, char *io_message);
-  void (*on_deinit) (int exit_code);
+  int (*on_message) (bool initiator, struct tlv_header *io_header, char *io_message);
+  void (*on_deinit) (bool initiator, int exit_code);
 };
 
 struct {
@@ -114,7 +121,7 @@ void dummy_init(bool initiator, uint16_t max_size){
   dummy_bench.initiator = initiator;
 }
 
-int dummy_reply (struct tlv_header *io_header, char *io_message) {
+int dummy_reply (bool initiator, struct tlv_header *io_header, char *io_message) {
   if (dummy_bench.initiator) {
     if (dummy_bench.round > 60) return 0;
   }
@@ -139,9 +146,10 @@ int dummy_reply (struct tlv_header *io_header, char *io_message) {
   return io_header->length;
 }
 
-void dummy_deinit(int exit_code){
+void dummy_deinit(bool initator, int exit_code){
   int64_t duration = esp_timer_get_time() - dummy_bench.start;
-  ESP_LOGI(TAG, "Throughput test complete exit: %i (%"PRId64" ms) [RX %.2f KB/s, TX: %.2f KB/s]",
+  ESP_LOGI(TAG, "Throughput test complete [%i] exit: %i (%"PRId64" ms) [RX %.2f KB/s, TX: %.2f KB/s]",
+      initator,
       exit_code,
       duration / 1000,
       (dummy_bench.rx / (duration / 1000000.0)) / 1024,
@@ -177,10 +185,11 @@ int do_communicate (bool initiator, const int sock) {
       } else if (received == 0 || header->type == CMD_BYE) {
         message[header->length] = 0; /* Nullterm bye message */
         ESP_LOGI(TAG, "[BYE] %s", message);
+        exit_code = 0;
         break;
       }
     } else { // Transmit
-      int to_send = handlers->on_message(header, message);
+      int to_send = handlers->on_message(initiator, header, message);
 
       if (to_send == 0) {
         header->type = CMD_BYE;
@@ -203,12 +212,12 @@ int do_communicate (bool initiator, const int sock) {
     phase = !phase;
     delay(10);
   }
-  handlers->on_deinit(exit_code);
+  handlers->on_deinit(initiator, exit_code);
   return exit_code;
 }
 
 static void tcp_server_task(void *pvParameters) {
-    int addr_family = AF_INET6; // (int)pvParameters;
+    int addr_family = AF_INET; // (int)pvParameters;
     int ip_protocol = 0;
     int keepAlive = 1;
     int keepIdle = KEEPALIVE_IDLE;
@@ -217,11 +226,17 @@ static void tcp_server_task(void *pvParameters) {
     struct sockaddr_storage dest_addr;
 
     if (addr_family == AF_INET6) {
-        struct sockaddr_in6 *dest_addr_ip6 = (struct sockaddr_in6 *)&dest_addr;
-        bzero(&dest_addr_ip6->sin6_addr.un, sizeof(dest_addr_ip6->sin6_addr.un));
-        dest_addr_ip6->sin6_family = AF_INET6;
-        dest_addr_ip6->sin6_port = htons(PORT);
-        ip_protocol = IPPROTO_IPV6;
+      struct sockaddr_in6 *dest_addr_ip6 = (struct sockaddr_in6 *)&dest_addr;
+      bzero(&dest_addr_ip6->sin6_addr.un, sizeof(dest_addr_ip6->sin6_addr.un));
+      dest_addr_ip6->sin6_family = AF_INET6;
+      dest_addr_ip6->sin6_port = htons(PORT);
+      ip_protocol = IPPROTO_IPV6;
+    } else if (addr_family == AF_INET) {
+      struct sockaddr_in *dest_addr_ip4 = (struct sockaddr_in *)&dest_addr;
+      dest_addr_ip4->sin_addr.s_addr = htonl(INADDR_ANY);
+      dest_addr_ip4->sin_family = AF_INET;
+      dest_addr_ip4->sin_port = htons(PORT);
+      ip_protocol = IPPROTO_IP;
     }
 
     rpc_state.listen_sock = socket(addr_family, SOCK_STREAM, ip_protocol);
@@ -231,20 +246,24 @@ static void tcp_server_task(void *pvParameters) {
         return;
     }
     int opt = 1;
-    setsockopt(rpc_state.listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    int err = setsockopt(rpc_state.listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (err != 0) ESP_LOGW(TAG, "setsockopt(SO_REUSEADDR) exit %i", err); /* docs say not implemented */
+
+    char ifname[6];
+    ESP_ERROR_CHECK(esp_netif_get_netif_impl_name(rpc_state.netif_ap, ifname));
 #if defined(CONFIG_EXAMPLE_IPV4) && defined(CONFIG_EXAMPLE_IPV6)
     // Note that by default IPV6 binds to both protocols, it is must be disabled
     // if both protocols used at the same time (used in CI)
     setsockopt(listen_sock, IPPROTO_IPV6, IPV6_V6ONLY, &opt, sizeof(opt));
 #endif
     ESP_LOGI(TAG, "Socket created");
-    int err = bind(rpc_state.listen_sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    err = bind(rpc_state.listen_sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
     if (err != 0) {
         ESP_LOGE(TAG, "Socket unable to bind: (%d) %s", errno, lwip_strerr(errno));
         ESP_LOGE(TAG, "IPPROTO: %d", addr_family);
         goto DEINIT;
     }
-    ESP_LOGI(TAG, "Socket bound, port %d", PORT);
+    ESP_LOGI(TAG, "Socket bound, port %d, dev: %s", PORT, ifname);
 
     err = listen(rpc_state.listen_sock, 1);
     if (err != 0) {
@@ -278,6 +297,9 @@ static void tcp_server_task(void *pvParameters) {
         struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         // Convert ip address to string
+        if (source_addr.ss_family == PF_INET) {
+            inet_ntoa_r(((struct sockaddr_in *)&source_addr)->sin_addr, addr_str, sizeof(addr_str) - 1);
+        }
         if (source_addr.ss_family == PF_INET6) {
             inet6_ntoa_r(((struct sockaddr_in6 *)&source_addr)->sin6_addr, addr_str, sizeof(addr_str) - 1);
         }
@@ -297,62 +319,27 @@ DEINIT:
     vTaskDelete(NULL);
 }
 
-void rpc_listen () {
+void rpc_listen (esp_netif_t *interface) {
   rpc_state.event_group = xEventGroupCreate();
-  xTaskCreate(tcp_server_task, "tcp_server", 4096, (void*)AF_INET6, 5, &rpc_state.server_task);
+  rpc_state.netif_ap = interface;
+  xTaskCreate(tcp_server_task, "tcp_server", 4096, NULL, 5, &rpc_state.server_task);
 }
 
 void tcp_client_task(void *pvParameters) {
-  ip_addr_t *target = rpc_state.addr;
-  const char *host = ip6addr_ntoa(&target->u_addr.ip6);
-  int exit_code = -1;
-
-  struct sockaddr_in6 dest_addr = { 0 };
-  /* lwip is confusing; in6_addr posix compliant while ip6_addr_t is LWIP local? */
-  memcpy(&dest_addr.sin6_addr, &target->u_addr.ip6.addr, sizeof(dest_addr.sin6_addr));
-  dest_addr.sin6_family = AF_INET6;
-  dest_addr.sin6_port = htons(PORT);
-
-  int sock = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-  if (sock < 0) {
-    ESP_LOGE(TAG, "Unable to create socket: (%d) %s", errno, lwip_strerr(errno));
-    return;
-  }
-  ESP_LOGI(TAG, "Socket created, connecting to %s:%d", host, PORT);
-
-  dest_addr.sin6_scope_id = esp_netif_get_netif_impl_index(rpc_state.netif);
-  ESP_LOGI(TAG, "Interface index: %" PRIu32, dest_addr.sin6_scope_id);
-
-  int errCount = 0;
-  int err = 0;
-
-  do  {
-    err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-    if (err != 0) ESP_LOGE(TAG, "Socket unable to connect: (%d) %s", errno, lwip_strerr(errno));
-    if (10 < errCount++) goto DEINIT;
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-  } while (err != 0);
-
-  struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-  ESP_LOGI(TAG, "Successfully connected");
+  int sock = *(int*)pvParameters;
   xEventGroupSetBits(rpc_state.event_group, EV_RPC_PEER_SOCKET);
 
-  exit_code = do_communicate(true, sock);
+  int exit_code = do_communicate(true, sock);
 
-DEINIT:
-  if (sock != -1) {
-    ESP_LOGI(TAG, "Socket disconnected %s:%d", host, PORT);
-    shutdown(sock, 0);
-    close(sock);
-  }
+  ESP_LOGI(TAG, "Socket[%i] disconnected do_comm exit: %i", sock, exit_code);
+  shutdown(sock, 0);
+  close(sock);
   snail_inform_complete(exit_code);
   rpc_state.client_task = 0;
   vTaskDelete(NULL);
 }
 
-int rpc_connect(esp_netif_t *netif, ip_addr_t *target) { // TODO: Target is volatile+unecessary
+int spawn_client(int sock) {
   if (rpc_state.client_task != 0) {
     eTaskState s = eTaskGetState(rpc_state.client_task);
     if (s != eDeleted && s != eInvalid) {
@@ -363,9 +350,7 @@ int rpc_connect(esp_netif_t *netif, ip_addr_t *target) { // TODO: Target is vola
       if (s != eDeleted && s != eInvalid) return -1;
     }
   }
-  rpc_state.addr = target;
-  rpc_state.netif = netif;
-  xTaskCreate(tcp_client_task, "tcp_client", 4096, NULL, 10, &rpc_state.client_task);
+  xTaskCreate(tcp_client_task, "tcp_client", 4096, &sock, 10, &rpc_state.client_task);
   return 0;
 }
 
@@ -375,3 +360,71 @@ int rpc_wait_for_peer_socket(TickType_t t) {
   if (bits & EV_RPC_PEER_SOCKET) return 0;
   else return -1;
 }
+
+int rpc_connect(esp_netif_t *netif, ip_addr_t *peer) {
+  const char *host = ip4addr_ntoa(&peer->u_addr.ip4);
+  struct sockaddr_in dest_addr = {
+    .sin_family = AF_INET,
+    .sin_port = htons(PORT),
+    .sin_addr.s_addr = peer->u_addr.ip4.addr
+  };
+  int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (sock < 0) {
+    ESP_LOGE(TAG, "Unable to create socket: (%d) %s", errno, lwip_strerr(errno));
+    return sock;
+  }
+  struct timeval tv = { .tv_sec = RECV_TIMEOUT, .tv_usec = 0 };
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  // char ifname[6];
+  // ESP_ERROR_CHECK(esp_netif_get_netif_impl_name(rpc_state.netif_sta, ifname));
+  ESP_LOGI(TAG, "Socket[%i] created, connecting to %s:%d", sock, host, PORT);
+
+  int fail = 0;
+  while (1) {
+    int err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    if (err == 0) break;
+    ESP_LOGE(TAG, "Socket[%i] unable to connect: (%d) %s", sock, errno, lwip_strerr(errno));
+    if (fail++ > 10) {
+      shutdown(sock, SHUT_RDWR);
+      close(sock);
+      return -1;
+    }
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+  }
+  ESP_LOGI(TAG, "Successfully[%i] connected", sock);
+  return spawn_client(sock);
+}
+
+/* Test IPv6 Connection */
+int rpc_connect6(esp_netif_t *netif) {
+  // const char *IP_AP = "::ffff:169.254.0.1";
+  const char *IP_AP = "::ffff:192.168.4.1";
+  struct sockaddr_in6 remote = {
+    .sin6_family = AF_INET6,
+    .sin6_port = htons(PORT),
+    .sin6_scope_id = esp_netif_get_netif_impl_index(netif),
+  };
+  int err = inet_pton(AF_INET6, IP_AP, &remote.sin6_addr);
+  if (err != 1) {
+    ESP_LOGE(TAG, "client6: Parse Address Failed %i", err);
+    return -1;
+  }
+
+  int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (sock < 0) {
+    ESP_LOGE(TAG, "client6: Create socket failed %i", sock);
+    return -1;
+  }
+  int fails = 0;
+  ESP_LOGW(TAG, "Attempting to Connect to %s", IP_AP);
+  do {
+    err = connect(sock, (struct sockaddr*)&remote, sizeof(remote));
+    if (!err) ESP_LOGW(TAG, "===== CONNECTION SUCCESS!! ====");
+    else ESP_LOGE(TAG, "client6: socket[%i] connect failed: (%d) %s", sock, err, lwip_strerr(err));
+    if (100 < fails++) break;
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+  } while (err != 0);
+  return err;
+}
+
+

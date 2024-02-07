@@ -9,6 +9,7 @@
 #define DISPLAY_LED
 // #define PROTO_NAN
 #define PROTO_SWAP
+// #define USE_V6
 
 //--------------------
 #define delay(ms) vTaskDelay((ms) / portTICK_PERIOD_MS)
