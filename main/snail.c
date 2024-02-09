@@ -186,9 +186,11 @@ void swap_polarity() {
 void snail_inform_complete(const int exit_code) {
 #ifdef PROTO_NAN
   nanr_inform_complete(exit_code);
-#else
-  // snail_transition(LEAVE);
 #endif
+#ifdef PROTO_SWAP
+  swap_deauth(exit_code);
+#endif
+  // snail_transition(LEAVE);
 }
 
 const char* status_str(peer_status s) {

@@ -273,12 +273,12 @@ static void tcp_server_task(void *pvParameters) {
     rpc_state.listening = true;
     char addr_str[128];
     while (rpc_state.listening) {
-        ESP_LOGI(TAG, "blocking task with accept()");
+        ESP_LOGI(TAG, "TCPServer: blocking task with accept()");
         struct sockaddr_storage source_addr; // Large enough for both IPv4 or IPv6
         socklen_t addr_len = sizeof(source_addr);
         int sock = accept(rpc_state.listen_sock, (struct sockaddr *)&source_addr, &addr_len);
         if (sock < 0) {
-            ESP_LOGE(TAG, "Unable to accept connection: (%d) %s", errno, lwip_strerr(errno));
+            ESP_LOGE(TAG, "ServerSock[%i] Unable to accept connection: (%d) %s", sock, errno, lwip_strerr(errno));
             goto DROP_CONNECTION;
         }
         // Convert ip address to string
@@ -288,11 +288,11 @@ static void tcp_server_task(void *pvParameters) {
         if (source_addr.ss_family == PF_INET6) {
           inet6_ntoa_r(((struct sockaddr_in6 *)&source_addr)->sin6_addr, addr_str, sizeof(addr_str) - 1);
         }
-        ESP_LOGI(TAG, "Incoming connection: %s", addr_str);
+        ESP_LOGI(TAG, "ServerSock[%i] Incoming connection: %s", sock, addr_str);
 
         /* Prevent simultaneous peer connections */
         if (snail_transition_valid(INFORM) != 0) {
-          ESP_LOGW(TAG, "Status Busy (%s), %s dropped", status_str(snail_current_status()), addr_str);
+          ESP_LOGW(TAG, "ServerSock[%i] Status Busy (%s), %s dropped", sock, status_str(snail_current_status()), addr_str);
           goto DROP_CONNECTION;
         }
 
@@ -306,11 +306,13 @@ static void tcp_server_task(void *pvParameters) {
         struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         int ret = do_communicate(false, sock);
+        ESP_LOGW(TAG, "ServerSock[%i] do_comm exit: %i", sock, ret);
         snail_inform_complete(ret);
 DROP_CONNECTION:
         shutdown(sock, 0);
         close(sock);
         vTaskDelay(10);
+        ESP_LOGW(TAG, "ServerSock[%i] closed, looping", sock);
     }
 
 DEINIT:
@@ -331,11 +333,12 @@ void tcp_client_task(void *pvParameters) {
 
   int exit_code = do_communicate(true, sock);
 
-  ESP_LOGI(TAG, "Socket[%i] disconnected do_comm exit: %i", sock, exit_code);
+  ESP_LOGI(TAG, "ClientSock[%i] do_comm exit: %i", sock, exit_code);
   shutdown(sock, 0);
   close(sock);
   snail_inform_complete(exit_code);
   rpc_state.client_task = 0;
+  ESP_LOGW(TAG, "ClientSock[%i] closed, task end", sock);
   vTaskDelete(NULL);
 }
 
@@ -370,20 +373,20 @@ int rpc_connect(esp_netif_t *netif, ip_addr_t *peer) {
   };
   int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (sock < 0) {
-    ESP_LOGE(TAG, "Unable to create socket: (%d) %s", errno, lwip_strerr(errno));
+    ESP_LOGE(TAG, "ClientSock[%i] Unable to create socket: (%d) %s", sock, errno, lwip_strerr(errno));
     return sock;
   }
   struct timeval tv = { .tv_sec = RECV_TIMEOUT, .tv_usec = 0 };
   setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   // char ifname[6];
   // ESP_ERROR_CHECK(esp_netif_get_netif_impl_name(rpc_state.netif_sta, ifname));
-  ESP_LOGI(TAG, "Socket[%i] created, connecting to %s:%d", sock, host, PORT);
+  ESP_LOGI(TAG, "ClientSock[%i] created, connecting to %s:%d", sock, host, PORT);
 
   int fail = 0;
   while (1) {
     int err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
     if (err == 0) break;
-    ESP_LOGE(TAG, "Socket[%i] unable to connect: (%d) %s", sock, errno, lwip_strerr(errno));
+    ESP_LOGE(TAG, "ClientSock[%i] unable to connect: (%d) %s", sock, errno, lwip_strerr(errno));
     if (fail++ > 10) {
       shutdown(sock, SHUT_RDWR);
       close(sock);
@@ -391,6 +394,6 @@ int rpc_connect(esp_netif_t *netif, ip_addr_t *peer) {
     }
     vTaskDelay(2000 / portTICK_PERIOD_MS);
   }
-  ESP_LOGI(TAG, "Successfully[%i] connected", sock);
+  ESP_LOGI(TAG, "ClientSock[%i] Successfully connected", sock);
   return spawn_client(sock);
 }

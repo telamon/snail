@@ -17,27 +17,22 @@
 #include "nvs_flash.h"
 #include "esp_mac.h"
 #include "esp_random.h"
-#include "assert.h"
+#include <time.h>
 
 #define TAG "swap.c"
-#define SSID "snail"
-#define CHANNEL 6
+#define SSID "SNAIL"
 #define EV_IP_LINK_UP BIT0
 #define EV_AP_NODE_ATTACHED BIT1
-/* Spend 2s waiting for peers between scans */
-#define NOTIFY_TIME 6000
+#define EV_AP_NODE_DETACHED BIT2
 
 static char OUI[3] = {0xAA, 0xAA, 0xAA};
-/* Size of max-scanned peers */
-#define N_PEERS 7
-
 struct peer_info {
   uint8_t bssid[6];
   int rssi;
-  /* uint8_t flags; // Reconcilliated|
   uint16_t seen; // Last seen in ticks?
-  uint32_t date; // Node.date = Last Block.date (decentralized swarm clock)
-  */
+  uint32_t synced;
+  int sync_result;
+  uint32_t clock; // Node.date = Last Block.date (decentralized swarm clock)
   uint8_t payload[32]; /* TODO: Redefine to something meaningful */
 };
 
@@ -63,7 +58,7 @@ static struct swap_state {
       /* power consumption tuning */
       .beacon_interval = 200,
       /* Cloak beacons */
-      .ssid_hidden = 0
+      .ssid_hidden = CLOAK_SSID
     },
   },
   .sta_config = {
@@ -92,24 +87,40 @@ static esp_netif_ip_info_t ip_info_ap = {
 };
 
 /**
+ * Turns out this function does 3 things.
+ * - writes length to *i
+ * - returns most interesting idx
+ * - dumps peer list to console.
  * @param i out, contains number of peers discovered
  */
 static int peer_select_num (uint16_t *i) {
-  int best = *i = 0;
+  *i = 0;
+  int best_rssi = -100;
+  int best_idx = -1;
+  time_t now = time(NULL);
+  ESP_LOGE(TAG, "======= [PEERS] ========");
   for (; *i < N_PEERS; ++*i) {
+    struct peer_info *peer = &state.peers[*i];
     int is_empty = 1;
-    for (int j = 0; is_empty && j < 6; ++j) is_empty = !state.peers[*i].bssid[j];
+    for (int j = 0; is_empty && j < 6; ++j) is_empty = !peer->bssid[j];
     if (*i == 0 && is_empty) return -1; // No peers
     if (is_empty) break;
-    ESP_LOGI(TAG, "peer%i: "MACSTR" RSSI: %i", *i, MAC2STR(state.peers[*i].bssid), state.peers[*i].rssi);
+    int seen = now - peer->seen;
+    int synced = now - peer->synced;
+    ESP_LOGI(TAG, "peer%i: "MACSTR" RSSI: %i, Seen: %i, Synced: [%i] %"PRIu32, *i, MAC2STR(peer->bssid), peer->rssi, seen, peer->sync_result, peer->synced);
+    if (peer->sync_result == 1 && synced < BACKOFF_TIME) continue;
+    if (peer->sync_result == -1 && synced < BACKOFF_TIME / 3) continue;
+
+
+    // if (high_clock < peer->clock) update high_clock_idx + high_clock
     /* Update best criterion along the way */
-    if (state.peers[*i].rssi > state.peers[best].rssi) best = *i;
+    if (peer->rssi > best_rssi) best_idx = *i;
   }
-  ESP_LOGI(TAG, "SELECTED peer%i "MACSTR" RSSI: %i",
-    best,
-    MAC2STR(state.peers[best].bssid),
-    state.peers[best].rssi);
-  return best;
+  ESP_LOGE(TAG, "SELECTED peer%i "MACSTR" RSSI: %i",
+    best_idx,
+    MAC2STR(state.peers[best_idx].bssid),
+    state.peers[best_idx].rssi);
+  return best_idx;
 }
 
 static void vsie_callback (
@@ -148,19 +159,36 @@ static void vsie_callback (
     if (registry[i].rssi < registry[weakest].rssi) weakest = i;
   }
   if (i == N_PEERS) i = weakest;
-  memcpy(registry[i].bssid, source_mac, 6);
-  registry[i].rssi = rssi;
-  memcpy(registry[i].payload, vnd_ie->payload, sizeof(registry[i].payload));
+  struct peer_info *slot = &registry[i];
+
+  slot->rssi = rssi;
+  slot->seen = time(NULL);
+  // slot->clock = decode(vnd_ie->payload);
+  // slot->id = decode(vnd_ie->payload);
+  memcpy(slot->bssid, source_mac, 6);
+  memcpy(slot->payload, vnd_ie->payload, sizeof(registry[i].payload));
   // ESP_LOGI(TAG, "Store peer "MACSTR" in slot %i", MAC2STR(registry[i].bssid), i);
 }
 
+static void update_ap_beacons (void) {
+  /* Custom data in AP-beacons */
+  uint8_t ie_data[38]; // sizeof(vendor_ie_data_t) + 32
+  vendor_ie_data_t *hdr = (vendor_ie_data_t*)&ie_data;
+  hdr->element_id = 0xDD;
+  hdr->length = 36; // after elem + length; remain OUI(3) + type (1) + Payload(32) = 36
+  memcpy(hdr->vendor_oui, OUI, 3);
+  hdr->vendor_oui_type = 0;
+  memset(hdr->payload, 0xff, 32); // TODO: blockheight/hash
+  esp_wifi_set_vendor_ie(true, WIFI_VND_IE_TYPE_BEACON, 0, &ie_data);
+  // esp_wifi_80211_tx(WIFI_IF_AP, &buffer, length, true); // ulitmate fallback raw frames.
+}
 
 /* Initialize Access Point */
 static void init_softap(void) {
   wifi_config_t *config = &state.ap_config;
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, config));
   // esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_LR); // Weird "patended" longrange-mode (maybe periodically enable)
-#ifndef USE_V6
+
   /* Reconfigure IP & DHCP-server */
   uint8_t bssid[6];
   esp_wifi_get_mac(WIFI_IF_AP, bssid);
@@ -170,18 +198,7 @@ static void init_softap(void) {
   ESP_ERROR_CHECK(esp_netif_set_ip_info(state.netif_ap, &ip_info_ap));
   ESP_ERROR_CHECK(esp_netif_dhcps_start(state.netif_ap));
   ESP_LOGI(TAG, "init_softap finished. SSID:%s channel:%d ip:"IPSTR, SSID, config->ap.channel, IP2STR(&ip_info_ap.ip));
-#endif
-  /* Custom data in AP-beacons */
-  // TODO: move to update_beacon_info() and call at beginning of every NOTIFY
-  // esp_wifi_80211_tx(WIFI_IF_AP, &buffer, length, true); // ulitmate fallback raw frames.
-  uint8_t ie_data[38]; // sizeof(vendor_ie_data_t) + 32
-  vendor_ie_data_t *hdr = (vendor_ie_data_t*)&ie_data;
-  hdr->element_id = 0xDD;
-  hdr->length = 36; // after elem + length; remain OUI(3) + type (1) + Payload(32) = 36
-  memcpy(hdr->vendor_oui, OUI, 3);
-  hdr->vendor_oui_type = 0;
-  memset(hdr->payload, 0xff, 32); // TODO: blockheight/hash
-  esp_wifi_set_vendor_ie(true, WIFI_VND_IE_TYPE_BEACON, 0, &ie_data);
+  update_ap_beacons();
 }
 
 
@@ -192,25 +209,6 @@ static int sta_associate(const uint8_t *bssid) {
   memcpy(config->sta.bssid, bssid, sizeof(config->sta.bssid));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, config));
   ESP_LOGI(TAG, "station reconfigured to "MACSTR, MAC2STR(config->sta.bssid));
-
-#ifdef USE_STATIC_IP
-  /* Stop DHCP-client */
-  int err = esp_netif_dhcpc_stop(state.netif_sta); // Disable to-begin-with?
-  if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
-    ESP_ERROR_CHECK(err);
-  }
-#ifndef USE_V6
-  /* Set static address IPv4*/
-  uint8_t sta_mac[6];
-  ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, sta_mac));
-  ip_info_sta.ip.addr = bssid_to_ipv4(sta_mac);
-  ESP_LOGI(TAG, "STA: reconfiguring static  ip: "IPSTR", mac: "MACSTR,
-      IP2STR(&ip_info_sta.ip),
-      MAC2STR(sta_mac));
-  ESP_ERROR_CHECK(esp_netif_set_ip_info(state.netif_sta, &ip_info_sta));
-  // xEventGroupSetBits(state.events, EV_IP_LINK_UP); /* CustomSTA never triggers GOT_IP event */
-#endif
-#endif
 
   /* Connect */
   int err = esp_wifi_connect();
@@ -252,6 +250,7 @@ static void wifi_event_handler(
       case WIFI_EVENT_AP_STACONNECTED:{
         wifi_event_ap_staconnected_t *event = (wifi_event_ap_staconnected_t *) event_data;
         ESP_LOGI(TAG, "EV_AP: Station "MACSTR" joined, AID=%d",MAC2STR(event->mac), event->aid);
+        // if (snail_current_status() == NOTIFY) ??
         xEventGroupSetBits(state.events, EV_AP_NODE_ATTACHED);
       } break;
 
@@ -272,9 +271,14 @@ static void wifi_event_handler(
 
       case WIFI_EVENT_STA_CONNECTED: {
         wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t*) event_data;
-        ESP_LOGI(TAG, "EV_STA: Connected to "MACSTR, MAC2STR(event->bssid));
+        ESP_LOGI(TAG, "EV_STA: station assoc to "MACSTR, MAC2STR(event->bssid));
       } break;
-      // TODO case WIFI_EVENT_STA_DISCONNECTED:
+
+      case WIFI_EVENT_STA_DISCONNECTED: {
+        wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t*) event_data;
+        ESP_LOGI(TAG, "EV_STA: station deauth from "MACSTR" reason(%i)", MAC2STR(event->bssid), event->reason);
+      } break;
+
       default:
         ESP_LOGW(TAG, "EV_WIFI unknown event, base: %s, id: %"PRIu32, event_base, event_id);
         break;
@@ -323,7 +327,7 @@ static int swap_seek_scan(void) {
   return ret;
 }
 
-static void swap_seeker_task (void* pvParams) {
+static void swap_main_task (void* pvParams) {
   /* kinda silly, but with STA-AP mode we SEEK & NOTIFY simultaneously <3 */
   snail_transition(SEEK);
 
@@ -341,8 +345,12 @@ static void swap_seeker_task (void* pvParams) {
       } break;
 
       case NOTIFY: {
+        /* Update published beacons */
+        update_ap_beacons();
+
         state.initiate_to = -1;
-        EventBits_t bits = xEventGroupWaitBits(state.events, EV_AP_NODE_ATTACHED, pdFALSE, pdFALSE, NOTIFY_TIME / portTICK_PERIOD_MS);
+        uint32_t drift = NOTIFY_TIME + (uint16_t)(esp_random() & 2047) ; // Force drift/desync
+        EventBits_t bits = xEventGroupWaitBits(state.events, EV_AP_NODE_ATTACHED, pdFALSE, pdFALSE, drift / portTICK_PERIOD_MS);
         if (bits & EV_AP_NODE_ATTACHED) {
           xEventGroupClearBits(state.events, EV_AP_NODE_ATTACHED);
           snail_transition(ATTACH);
@@ -354,6 +362,10 @@ static void swap_seeker_task (void* pvParams) {
           ESP_LOGI(TAG, "STA [Initiator] Waiting for link up");
           EventBits_t bits = xEventGroupWaitBits(state.events, EV_IP_LINK_UP, pdFALSE, pdFALSE, 10000 / portTICK_PERIOD_MS);
           if (!(bits & EV_IP_LINK_UP)) {
+            /* BUG! While waiting for link-up,
+             * another station can connect to Server-end,
+             * Steal ATTACH state then INFORM, LEAVE, NOTIFY,
+             * next line generates errors */
             snail_transition(LEAVE); /* Give up */
             continue;
           }
@@ -367,7 +379,7 @@ static void swap_seeker_task (void* pvParams) {
           int res = rpc_connect(state.netif_sta, &target);
           if (res != ESP_OK) {
             ESP_LOGE(TAG, "Failed spawning client, exit: %i", res);
-            snail_transition(LEAVE);
+            snail_transition(LEAVE); // <-- Invalid LEAVE => LEAVE (2nd invoc)
             continue;
           }
         }
@@ -384,7 +396,7 @@ static void swap_seeker_task (void* pvParams) {
       } break;
 
       case INFORM:
-        vTaskDelay(500 / portTICK_PERIOD_MS);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
         break;
 
       case LEAVE: {
@@ -441,6 +453,7 @@ void swap_init(void) {
   init_softap(); // Mostly Deprecated;
 
   /* Init Peer discovery/registry */
+  memset(state.peers, 0, sizeof(struct peer_info) * N_PEERS);
   esp_wifi_set_vendor_ie_cb(&vsie_callback, NULL);
 
   /* Boot up Radios */
@@ -450,7 +463,7 @@ void swap_init(void) {
   rpc_listen(state.netif_ap);
 
   /* Initialize task */
-  xTaskCreate(swap_seeker_task, "swap_seeker", 4096, NULL, 5, &state.seeker_task);
+  xTaskCreate(swap_main_task, "swap_seeker", 4096, NULL, 5, &state.seeker_task);
 }
 
 void swap_deinit(void) {
@@ -474,4 +487,26 @@ void swap_deinit(void) {
   // free(state.peers);
   // Where is esp_wifi_unset_vendor_ie_cb() ?
   memset(&state, 0, sizeof(state));
+}
+
+void swap_deauth(int exit_code) {
+  /* Update Peer-stats on Event Complete */
+  if (state.initiate_to != -1) {
+    struct peer_info *peer = &state.peers[state.initiate_to];
+    peer->synced = time(NULL);
+    peer->seen = time(NULL);
+    peer->sync_result = exit_code == 0 ? 1 : -1;
+    ESP_LOGW(TAG, "Reconcilliation complete, deauthing %i, exit: %i", state.initiate_to, exit_code);
+  } else {
+    // TODO: Keep track of incoming peer identities<->VSIE
+    ESP_LOGW(TAG, "Reconcilliation complete, exit: %i", exit_code);
+  }
+  /* Main task resets state */
+  snail_transition(LEAVE); // <-- bug
+}
+
+void swap_dump_peer_list(void) {
+  ESP_LOGE(TAG, "TODO: Dumping active peers not implemented");
+  uint16_t i = 0;
+  peer_select_num(&i);
 }
