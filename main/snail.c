@@ -1,4 +1,3 @@
-#include "driver/spi_common.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -7,7 +6,8 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
-
+#include "picofeed.h"
+#include "string.h"
 static struct snail_state state = {0};
 
 #define TAG "snail.c"
@@ -104,6 +104,19 @@ void display_state (struct snail_state* state) {
 }
 #endif
 
+void init_POP01(void) {
+  /* Does it run?; TODO: call after wifi init */
+  pico_keypair_t pair = {0};
+  pico_crypto_keypair(&pair);
+  char pkstr[64];
+  for (int i = 0; i < 32; i++) sprintf(pkstr+i*2, "%02x", pair.pk[i]);
+  ESP_LOGI(TAG, "secret initialized:\n %s",pkstr);
+  char msg[] = "Let S.N.A.I.L terraform the infospheres";
+  pico_feed_t feed = {0};
+  pico_feed_init(&feed);
+  pico_feed_append(&feed, (uint8_t*)msg, strlen(msg), pair);
+}
+
 /* The main task drives optional UI
  * and wifi NAN discovery.
  */
@@ -129,12 +142,11 @@ void app_main(void) {
   // state.status = SEEK;
 #endif
 
+  init_POP01();
+
   /* Hookup button */
   ESP_ERROR_CHECK(gpio_set_direction(BTN, GPIO_MODE_INPUT));
   ESP_ERROR_CHECK(gpio_pullup_en(BTN));
-  // ESP_ERROR_CHECK(gpio_intr_enable(BTN));
-
-
   int hold = gpio_get_level(BTN);
   TickType_t pressedAt = 000000000;
   TickType_t mode_start = xTaskGetTickCount();
