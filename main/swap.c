@@ -182,6 +182,7 @@ static void update_ap_beacons (void) {
   // esp_wifi_80211_tx(WIFI_IF_AP, &buffer, length, true); // ulitmate fallback raw frames.
 }
 
+/* TODO: rename swap_cloak */
 uint8_t swap_gateway_is_enabled(void) {
   return state.ap_config.ap.ssid_hidden;
 }
@@ -348,7 +349,7 @@ static void swap_main_task (void* pvParams) {
       case SEEK: {
         UBaseType_t uxHighWaterMark;
         uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
-        ESP_LOGW(TAG, "free stack: %i WORD\n", uxHighWaterMark);
+        ESP_LOGW(TAG, "free stack: %i WORD, heap: %"PRIu32"\n", uxHighWaterMark, esp_get_free_heap_size());
 
         /* Listen for beacons & associate */
         if (swap_seek_scan() == ESP_OK) snail_transition(ATTACH);
@@ -361,7 +362,7 @@ static void swap_main_task (void* pvParams) {
 
         state.initiate_to = -1;
         uint32_t drift = NOTIFY_TIME + (uint16_t)(esp_random() & 2047) ; // Force drift/desync
-        EventBits_t bits = xEventGroupWaitBits(state.events, EV_AP_NODE_ATTACHED, pdFALSE, pdFALSE, drift / portTICK_PERIOD_MS);
+        EventBits_t bits = xEventGroupWaitBits(state.events, EV_AP_NODE_ATTACHED, pdFALSE, pdFALSE, pdMS_TO_TICKS(drift));
         if (bits & EV_AP_NODE_ATTACHED) {
           xEventGroupClearBits(state.events, EV_AP_NODE_ATTACHED);
           snail_transition(ATTACH);
@@ -371,7 +372,7 @@ static void swap_main_task (void* pvParams) {
       case ATTACH: {
         if (state.initiate_to != -1) {
           ESP_LOGI(TAG, "STA [Initiator] Waiting for link up");
-          EventBits_t bits = xEventGroupWaitBits(state.events, EV_IP_LINK_UP, pdFALSE, pdFALSE, 10000 / portTICK_PERIOD_MS);
+          EventBits_t bits = xEventGroupWaitBits(state.events, EV_IP_LINK_UP, pdFALSE, pdFALSE, pdMS_TO_TICKS(10000));
           if (!(bits & EV_IP_LINK_UP)) {
             /* BUG! While waiting for link-up,
              * another station can connect to Server-end,
@@ -388,7 +389,7 @@ static void swap_main_task (void* pvParams) {
           ESP_ERROR_CHECK(esp_netif_get_ip_info(state.netif_sta, &ip_info_sta));
           target.u_addr.ip4.addr = ip_info_sta.gw.addr;
           // TODO: ws-connect
-          int res = -1; // rpc_connect(state.netif_sta, &target);
+          int res = wrpc_connect(state.netif_sta, &target);
           if (res != ESP_OK) {
             ESP_LOGE(TAG, "Failed spawning client, exit: %i", res);
             snail_transition(LEAVE); // <-- Invalid LEAVE => LEAVE (2nd invoc)
@@ -409,7 +410,7 @@ static void swap_main_task (void* pvParams) {
       } break;
 
       case INFORM:
-        vTaskDelay(100 / portTICK_PERIOD_MS);
+        vTaskDelay(pdMS_TO_TICKS(100));
         break;
 
       case LEAVE: {
@@ -426,7 +427,7 @@ static void swap_main_task (void* pvParams) {
 
       case OFFLINE: break;
     }
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 // DEINIT:
   vTaskDelete(NULL);

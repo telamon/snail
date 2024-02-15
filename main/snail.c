@@ -53,7 +53,7 @@ static void init_display(void) {
 void display_state (struct snail_state* state) {
   const TickType_t seed = xTaskGetTickCount();
   /* Global Animation Duration */
-  const uint16_t duration = 5000 / portTICK_PERIOD_MS;
+  const uint16_t duration = pdMS_TO_TICKS(5000);
   /* Timer 0: (0.0 to 1.0 in duration millis) */
   const float t0 = BW(seed, duration);
 
@@ -179,7 +179,7 @@ void app_main(void) {
     if ((state.status == SEEK || state.status == NOTIFY)) {
       uint32_t r = esp_random() ; // Force drift/desync
       const uint16_t delta = xTaskGetTickCount() - mode_start;
-      if (delta > (10000 + (r & 2047)) / portTICK_PERIOD_MS) {
+      if (delta > pdMS_TO_TICKS(10000 + (r & 2047))) {
         mode_start = xTaskGetTickCount();
         // ESP_LOGW(TAG, "SWAPPING POLARITY %i, r: %08lx", delta, r);
         // Disabled for manual testing.

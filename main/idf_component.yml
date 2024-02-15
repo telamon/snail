@@ -3,6 +3,7 @@ dependencies:
   # warmcat/libwebsockets: "*"
   # joltwallet/littlefs: "==1.14.1"
   espressif/led_strip: "*"
+  espressif/esp_websocket_client: ">=1.2.2"
   ## Required IDF version
   idf:
     version: ">=4.1.0"
