@@ -1,6 +1,7 @@
 ## IDF Component Manager Manifest File
 dependencies:
-  joltwallet/littlefs: "==1.14.1"
+  # warmcat/libwebsockets: "*"
+  # joltwallet/littlefs: "==1.14.1"
   espressif/led_strip: "*"
   ## Required IDF version
   idf:

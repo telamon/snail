@@ -383,7 +383,7 @@ static void swap_main_task (void* pvParams) {
           xEventGroupClearBits(state.events, EV_IP_LINK_UP);
           ESP_LOGI(TAG, "STA [initiator] IP link up! rpc_connect() imminent");
           /* Connect to gateway-addr */
-          ip_addr_t target={0};
+          ip_addr_t target = {0};
           esp_netif_ip_info_t ip_info_sta = {0};
           ESP_ERROR_CHECK(esp_netif_get_ip_info(state.netif_sta, &ip_info_sta));
           target.u_addr.ip4.addr = ip_info_sta.gw.addr;
