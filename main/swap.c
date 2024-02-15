@@ -9,7 +9,7 @@
 #include "lwip/ip_addr.h"
 #include "snail.h"
 #include "swap.h"
-#include "rpc.h"
+#include "wrpc.h"
 #include <string.h>
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -387,7 +387,8 @@ static void swap_main_task (void* pvParams) {
           esp_netif_ip_info_t ip_info_sta = {0};
           ESP_ERROR_CHECK(esp_netif_get_ip_info(state.netif_sta, &ip_info_sta));
           target.u_addr.ip4.addr = ip_info_sta.gw.addr;
-          int res = rpc_connect(state.netif_sta, &target);
+          // TODO: ws-connect
+          int res = -1; // rpc_connect(state.netif_sta, &target);
           if (res != ESP_OK) {
             ESP_LOGE(TAG, "Failed spawning client, exit: %i", res);
             snail_transition(LEAVE); // <-- Invalid LEAVE => LEAVE (2nd invoc)
@@ -397,8 +398,9 @@ static void swap_main_task (void* pvParams) {
 
         // Both initiator|non-initiator
         ESP_LOGI(TAG, "Waiting for socket, initiator: %i, PEER%i:", state.initiate_to != -1, state.initiate_to);
-        int res = rpc_wait_for_peer_socket(10000 / portTICK_PERIOD_MS);
-        if (res == ESP_OK) {
+        // int res = rpc_wait_for_peer_socket(10000 / portTICK_PERIOD_MS);
+        int err = -1; // TODO: semaphore on close?
+        if (err == ESP_OK) {
           snail_transition(INFORM);
         } else {
           ESP_LOGE(TAG, "No call.. giving up");
@@ -470,8 +472,8 @@ void swap_init(void) {
   /* Boot up Radios */
   ESP_ERROR_CHECK(esp_wifi_start());
 
-
-  rpc_listen(state.netif_ap);
+  wrpc_init();
+  // rpc_listen(state.netif_ap);
 
   /* Initialize task */
   xTaskCreate(swap_main_task, "swap_seeker", 4096, NULL, 5, &state.seeker_task);

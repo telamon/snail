@@ -158,13 +158,14 @@ void app_main(void) {
       else {
         uint16_t holdTime = xTaskGetTickCount() - pressedAt;
         // Long Press
-        if (holdTime > 100) {
-          ESP_ERROR_CHECK(swap_gateway_enable(!swap_gateway_is_enabled()));
+        if (holdTime > 200) {
 #ifdef PROTO_NAN
           nanr_unpublish();
           nanr_unsubscribe();
 #endif
         } else { // Short
+          /* decloak/cloak STA */
+          ESP_ERROR_CHECK(swap_gateway_enable(!swap_gateway_is_enabled()));
           // swap_polarity(); polarity swapping was due to a limitation in esp-nan.
         }
         ESP_LOGW(TAG, "Button was held %i", holdTime);
