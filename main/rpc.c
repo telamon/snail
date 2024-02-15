@@ -1,16 +1,13 @@
 /**
  * This file is scheduled for complete rewrite
  */
-#include "esp_wifi_types.h"
 #include "snail.h"
 #ifdef PROTO_NAN
 #include "nanr.h"
 #endif
 #include "rpc.h"
 #include "esp_log.h"
-#include "lwip/err.h"
 #include "lwip/sockets.h"
-#include "lwip/sys.h"
 #include <lwip/netdb.h>
 #include <arpa/inet.h>
 // #include "repo.h"
@@ -36,8 +33,10 @@ static struct {
   TaskHandle_t client_task;
   esp_netif_t *netif_sta;
 
+
   char rx_buffer[XF_BUFFER_SIZE];
-} rpc_state;
+  SemaphoreHandle_t comm_lock; /// Mutex for rx_buffer
+} rpc_state = {0};
 
 static int dispatch_preloaded (int socket, u8_t type, u16_t len) {
   char *rx_buffer = rpc_state.rx_buffer;
@@ -281,6 +280,7 @@ static void tcp_server_task(void *pvParameters) {
             ESP_LOGE(TAG, "ServerSock[%i] Unable to accept connection: (%d) %s", sock, errno, lwip_strerr(errno));
             goto DROP_CONNECTION;
         }
+        if (!xSemaphoreTake(rpc_state.comm_lock, 0)) goto DROP_CONNECTION;
         // Convert ip address to string
         if (source_addr.ss_family == PF_INET){
           inet_ntoa_r(((struct sockaddr_in *)&source_addr)->sin_addr, addr_str, sizeof(addr_str) - 1);
@@ -305,13 +305,16 @@ static void tcp_server_task(void *pvParameters) {
         setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keepCount, sizeof(int));
         struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
         int ret = do_communicate(false, sock);
         ESP_LOGW(TAG, "ServerSock[%i] do_comm exit: %i", sock, ret);
         snail_inform_complete(ret);
+        xSemaphoreGive(rpc_state.comm_lock);
 DROP_CONNECTION:
         shutdown(sock, 0);
         close(sock);
         vTaskDelay(10);
+
         ESP_LOGW(TAG, "ServerSock[%i] closed, looping", sock);
     }
 
@@ -324,14 +327,21 @@ DEINIT:
 void rpc_listen (esp_netif_t *interface) {
   rpc_state.event_group = xEventGroupCreate();
   rpc_state.netif_ap = interface;
+  rpc_state.comm_lock = xSemaphoreCreateMutex();
   xTaskCreate(tcp_server_task, "tcp_server", 4096, NULL, 5, &rpc_state.server_task);
 }
 
 void tcp_client_task(void *pvParameters) {
   int sock = *(int*)pvParameters;
   xEventGroupSetBits(rpc_state.event_group, EV_RPC_PEER_SOCKET);
-
-  int exit_code = do_communicate(true, sock);
+  int exit_code;
+  if (xSemaphoreTake(rpc_state.comm_lock, portMAX_DELAY)) {
+     exit_code = do_communicate(true, sock);
+     xSemaphoreGive(rpc_state.comm_lock);
+  } else {
+    ESP_LOGE(TAG, "Client failed to grab semaphore");
+    exit_code = -1;
+  }
 
   ESP_LOGI(TAG, "ClientSock[%i] do_comm exit: %i", sock, exit_code);
   shutdown(sock, 0);

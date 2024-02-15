@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 #include "picofeed.h"
 #include "string.h"
+
 static struct snail_state state = {0};
 
 #define TAG "snail.c"
@@ -156,13 +157,15 @@ void app_main(void) {
       if (!b) pressedAt = xTaskGetTickCount();
       else {
         uint16_t holdTime = xTaskGetTickCount() - pressedAt;
-        if (holdTime > 100) { // Long Press
+        // Long Press
+        if (holdTime > 100) {
+          ESP_ERROR_CHECK(swap_gateway_enable(!swap_gateway_is_enabled()));
 #ifdef PROTO_NAN
           nanr_unpublish();
           nanr_unsubscribe();
 #endif
-        } else {
-          swap_polarity();
+        } else { // Short
+          // swap_polarity(); polarity swapping was due to a limitation in esp-nan.
         }
         ESP_LOGW(TAG, "Button was held %i", holdTime);
         delay(150);

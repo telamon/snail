@@ -1,6 +1,8 @@
 #ifndef SWAP_H
 #define SWAP_H
-
+#include "esp_err.h"
+#include <stdint.h>
+/* Defaults */
 #define CLOAK_SSID 1
 #define CHANNEL 6
 /* Size of Active Peer Registry */
@@ -17,4 +19,6 @@ void swap_init(void);
 void swap_deauth(int exit_code);
 void swap_deinit(void);
 void swap_dump_peer_list(void);
+uint8_t swap_gateway_is_enabled(void);
+esp_err_t swap_gateway_enable (uint8_t enable);
 #endif

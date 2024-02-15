@@ -10,7 +10,6 @@
 #include "snail.h"
 #include "swap.h"
 #include "rpc.h"
-#include <stdint.h>
 #include <string.h>
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -181,6 +180,18 @@ static void update_ap_beacons (void) {
   memset(hdr->payload, 0xff, 32); // TODO: blockheight/hash
   esp_wifi_set_vendor_ie(true, WIFI_VND_IE_TYPE_BEACON, 0, &ie_data);
   // esp_wifi_80211_tx(WIFI_IF_AP, &buffer, length, true); // ulitmate fallback raw frames.
+}
+
+uint8_t swap_gateway_is_enabled(void) {
+  return state.ap_config.ap.ssid_hidden;
+}
+esp_err_t swap_gateway_enable (uint8_t enable) {
+  wifi_config_t *config = &state.ap_config;
+  config->ap.ssid_hidden = enable;
+  esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, config);
+  if (err != ESP_OK) return err;
+  // TODO: Activate websocket/httpd?
+  return err;
 }
 
 /* Initialize Access Point */
