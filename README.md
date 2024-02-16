@@ -49,8 +49,10 @@ pio run -t upload
 
 #### 2.b) The other way
 
-2. Setup [esp-idf](https://github.com/espressif/esp-idf#developing-with-esp-idf)
-3. Build & flash `idf.py build && idf.py flash`
+- Setup [esp-idf](https://github.com/espressif/esp-idf#developing-with-esp-idf)
+```
+idf.py build && idf.py flash
+```
 
 ## Design
 Sneakernet is the art of transferring data using physical transportation and without the use of internet.
