@@ -26,11 +26,31 @@ Optional addons:
 
 ## Flashing instructions
 
-1. Setup [esp-idf](https://github.com/espressif/esp-idf#developing-with-esp-idf)
-2. Clone this repo `git clone --recurse-submodules https://github.com/telamon/snail.git`
-3. Build & flash `idf.py build && idf.py flash`
+While prebuilt firmware is being built.
 
-Prebuilt firmware might be available later.
+
+#### 1. Clone this repo
+
+```
+git clone --recurse-submodules https://git.sr.ht/~telamohn/snail
+```
+
+#### 2.a) The easy way
+
+Get [PlatformIO](https://platformio.org/platformio-ide)
+
+Open project and find the upload button.
+
+or via commandline:
+
+```
+pio run -t upload
+```
+
+#### 2.b) The other way
+
+2. Setup [esp-idf](https://github.com/espressif/esp-idf#developing-with-esp-idf)
+3. Build & flash `idf.py build && idf.py flash`
 
 ## Design
 Sneakernet is the art of transferring data using physical transportation and without the use of internet.

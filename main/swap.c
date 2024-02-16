@@ -472,7 +472,6 @@ void swap_init(pwire_handlers_t *wire_io) {
 
   /* Boot up Radios */
   ESP_ERROR_CHECK(esp_wifi_start());
-
   wrpc_init(wire_io);
   // rpc_listen(state.netif_ap);
 
