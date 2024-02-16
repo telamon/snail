@@ -339,18 +339,18 @@ static void swap_main_task (void* pvParams) {
   snail_transition(esp_random() & 1 ? SEEK : NOTIFY);
 
   while (1) {
+    // UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+    // ESP_LOGW(TAG, "free stack: %i WORD, heap: %"PRIu32"\n", uxHighWaterMark, esp_get_free_heap_size());
     peer_status s = snail_current_status();
     switch (s) {
       case SEEK: {
-        UBaseType_t uxHighWaterMark;
-        uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
-        ESP_LOGW(TAG, "free stack: %i WORD, heap: %"PRIu32"\n", uxHighWaterMark, esp_get_free_heap_size());
         /* Listen for beacons & associate */
         int selected_peer = swap_seek_scan();
         if (selected_peer < 0) {
           snail_transition(NOTIFY);
           break;
         }
+
         /* If someone connected while scanning, go back back to sleep */
         wifi_sta_list_t stations = {0};
         ESP_ERROR_CHECK(esp_wifi_ap_get_sta_list(&stations));
@@ -366,6 +366,7 @@ static void swap_main_task (void* pvParams) {
           state.initiate_to = selected_peer;
           snail_transition(ATTACH);
         } else {
+          ESP_LOGW(TAG, "Failed to associate %i", err);
           snail_transition(NOTIFY);
         }
       } break;
@@ -373,7 +374,6 @@ static void swap_main_task (void* pvParams) {
       case NOTIFY: {
         /* Update published beacons */
         update_ap_beacons();
-
         state.initiate_to = -1;
         uint32_t drift = NOTIFY_TIME + (uint16_t)(esp_random() & 2047) ; // Force drift/desync
         EventBits_t bits = xEventGroupWaitBits(state.events, EV_AP_NODE_ATTACHED, pdFALSE, pdFALSE, pdMS_TO_TICKS(drift));
@@ -384,7 +384,7 @@ static void swap_main_task (void* pvParams) {
       } break;
 
       case ATTACH: {
-        if (state.initiate_to != -1) {
+        if (state.initiate_to != -1) { /* initiator */
           ESP_LOGI(TAG, "STA [Initiator] Waiting for link up");
           EventBits_t bits = xEventGroupWaitBits(state.events, EV_IP_LINK_UP, pdFALSE, pdFALSE, pdMS_TO_TICKS(10000));
           if (!(bits & EV_IP_LINK_UP)) {
@@ -392,7 +392,8 @@ static void swap_main_task (void* pvParams) {
              * another station can connect to Server-end,
              * Steal ATTACH state then INFORM, LEAVE, NOTIFY,
              * next line generates errors */
-            snail_transition(LEAVE); /* Give up */
+            ESP_LOGW(TAG, "STA [initiator] No link, giving up");
+            swap_deauth(-1); /* Give up */
             continue;
           }
           xEventGroupClearBits(state.events, EV_IP_LINK_UP);
@@ -402,24 +403,29 @@ static void swap_main_task (void* pvParams) {
           esp_netif_ip_info_t ip_info_sta = {0};
           ESP_ERROR_CHECK(esp_netif_get_ip_info(state.netif_sta, &ip_info_sta));
           target.u_addr.ip4.addr = ip_info_sta.gw.addr;
-          // TODO: ws-connect
-          int res = wrpc_connect(state.netif_sta, &target);
+          // TODO: Need to enter inform on connect
+          int res = wrpc_connect(state.netif_sta, &target); // blocks until conn-close
           if (res != ESP_OK) {
             ESP_LOGE(TAG, "Failed spawning client, exit: %i", res);
-            snail_transition(LEAVE); // <-- Invalid LEAVE => LEAVE (2nd invoc)
-            continue;
           }
-        }
-
-        // Both initiator|non-initiator
-        ESP_LOGI(TAG, "Waiting for socket, initiator: %i, PEER%i:", state.initiate_to != -1, state.initiate_to);
-        // int res = rpc_wait_for_peer_socket(10000 / portTICK_PERIOD_MS);
-        int err = -1; // TODO: semaphore on close?
-        if (err == ESP_OK) {
-          snail_transition(INFORM);
-        } else {
-          ESP_LOGE(TAG, "No call.. giving up");
-          snail_transition(LEAVE);
+          swap_deauth(res);
+          break;
+        } else { /* non-initiator */
+          ESP_LOGI(TAG, "Waiting for socket, initiator: %i, PEER%i:", state.initiate_to != -1, state.initiate_to);
+          wifi_sta_list_t stations = {0};
+          ESP_ERROR_CHECK(esp_wifi_ap_get_sta_list(&stations));
+          if (stations.num == 0) { /* No-one's around */
+            swap_deauth(-1);
+            break;
+          }
+          // int res = rpc_wait_for_peer_socket(10000 / portTICK_PERIOD_MS);
+          int err = -1; // TODO: semaphore on close? <-- urgent
+          if (err == ESP_OK) {
+            snail_transition(INFORM);
+          } else {
+            ESP_LOGE(TAG, "No call.. giving up");
+            swap_deauth(-1);
+          }
         }
       } break;
 

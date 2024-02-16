@@ -197,7 +197,7 @@ static const httpd_uri_t ws = {
         .is_websocket = true
 };
 
-esp_err_t onconnect(httpd_handle_t hd, int sockfd) {
+esp_err_t httpd_onconnect(httpd_handle_t hd, int sockfd) {
   ESP_LOGI(TAG_S, "httpd connected %i", sockfd);
   if (!xSemaphoreTake(client_lock, pdMS_TO_TICKS(1000))) {
     return ESP_FAIL; // TODO: rename client_lock to connection_lock
@@ -209,13 +209,12 @@ esp_err_t onconnect(httpd_handle_t hd, int sockfd) {
   return ESP_OK; // -1 to fast disconnect
 }
 
-void onclose(httpd_handle_t hd, int sockfd) {
+void httpd_onclose(httpd_handle_t hd, int sockfd) {
   ESP_LOGI(TAG_S, "httpd disconnected %i", sockfd);
   if (handlers.on_close != NULL) {
     pwire_event_t ev = { .initiator = false, .size = 0, .message = NULL };
     handlers.on_close(&ev);
   }
-
   xSemaphoreGive(client_lock);
 }
 
@@ -224,8 +223,8 @@ esp_err_t wrpc_init(pwire_handlers_t *message_handlers) {
     assert(handlers.on_data != NULL);
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.open_fn = onconnect;
-    config.close_fn = onclose;
+    config.open_fn = httpd_onconnect;
+    config.close_fn = httpd_onclose;
 
     // Start the httpd server
     ESP_LOGI(TAG_S, "Starting httpd on port: '%d'", config.server_port);
@@ -237,7 +236,7 @@ esp_err_t wrpc_init(pwire_handlers_t *message_handlers) {
     httpd_register_uri_handler(server, &ws);
 
     /* Register event handlers to stop the server when Wi-Fi or Ethernet is disconnected,
-     * and re-start it upon connection.
+     * and re-start it upon connection. (really needed?)
      */
     // ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &connect_handler, &server));
     // ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &disconnect_handler, &server));
@@ -245,7 +244,6 @@ esp_err_t wrpc_init(pwire_handlers_t *message_handlers) {
     // Initialize Client scope
     client_shutdown = xSemaphoreCreateBinary();
     client_lock = xSemaphoreCreateMutex();
-    shutdown_timer = xTimerCreate("Websocket shutdown timer", 10 * 1000 / portTICK_PERIOD_MS,
-                                         pdFALSE, NULL, kill_client);
+    shutdown_timer = xTimerCreate("Websocket shutdown timer", 10 * 1000 / portTICK_PERIOD_MS, pdFALSE, NULL, kill_client);
     return ESP_OK;
 }
