@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark" />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"
+    />
+    <title>S.N.A.I.L</title>
+  </head>
+  <body>
+    <main class="container">
+      <h1>V-net WRPC://</h1>
+      <label for="addr">
+        V-modem address: <input id="addr" name="addr" type="text" placeholder="10.x.x.1" />
+      </label>
+      <button id="connect">connect</button>
+    </main>
+    <script>
+      function vnetConnect(url) {
+        const socket = new WebSocket(url)
+        socket.addEventListener('open', ev => {
+          console.log('onopen', ev)
+          socket.send('chirp');
+        })
+
+        socket.addEventListener('message', ev => {
+          console.log('onmessage', ev)
+        })
+
+        socket.addEventListener('error', err => {
+          console.warn('onerror', err)
+        })
+
+        return socket;
+      }
+
+      document.getElementById('connect')
+        .addEventListener('click', ev => {
+          const addr = document.getElementById('addr')?.value
+          const url = `ws://${addr}/socket`
+          console.info(`Connecting to ${url}`)
+          vnetConnect(url)
+        })
+    </script>
+  </body>
+</html>
