@@ -49,7 +49,8 @@ pio run -t upload
 
 #### 2.b) The other way
 
-- Setup [esp-idf](https://github.com/espressif/esp-idf#developing-with-esp-idf)
+Setup [esp-idf](https://github.com/espressif/esp-idf#developing-with-esp-idf) then:
+
 ```
 idf.py build && idf.py flash
 ```
