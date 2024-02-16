@@ -39,7 +39,7 @@ static pwire_ret_t recon_ondata(pwire_event_t *ev) {
 }
 
 static void recon_onclose(pwire_event_t *ev) {
-  ESP_LOGI(TAG, "pwire_data initiator: %i", ev->initiator);
+  ESP_LOGI(TAG, "pwire_onclose initiator: %i", ev->initiator);
   if (buffer == NULL) {
     ESP_LOGE(TAG, "expected memory is gone");
     abort();

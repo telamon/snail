@@ -164,9 +164,7 @@ void app_main(void) {
           nanr_unsubscribe();
 #endif
         } else { // Short
-          /* decloak/cloak STA */
           ESP_ERROR_CHECK(swap_gateway_enable(!swap_gateway_is_enabled()));
-          // swap_polarity(); polarity swapping was due to a limitation in esp-nan.
         }
         ESP_LOGW(TAG, "Button was held %i", holdTime);
         delay(150);
@@ -181,22 +179,10 @@ void app_main(void) {
       const uint16_t delta = xTaskGetTickCount() - mode_start;
       if (delta > pdMS_TO_TICKS(10000 + (r & 2047))) {
         mode_start = xTaskGetTickCount();
-        // ESP_LOGW(TAG, "SWAPPING POLARITY %i, r: %08lx", delta, r);
-        // Disabled for manual testing.
-        swap_polarity();
       }
     }
     delay(5);
   }
-}
-
-void swap_polarity() {
-#ifdef PROTO_NAN
-  nanr_swap_polarity();
-#else
-  // if (state.status == SEEK) snail_transition(NOTIFY);
-  // else state.status = SEEK;
-#endif
 }
 
 void snail_inform_complete(const int exit_code) {

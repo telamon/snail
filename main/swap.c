@@ -388,10 +388,6 @@ static void swap_main_task (void* pvParams) {
           ESP_LOGI(TAG, "STA [Initiator] Waiting for link up");
           EventBits_t bits = xEventGroupWaitBits(state.events, EV_IP_LINK_UP, pdFALSE, pdFALSE, pdMS_TO_TICKS(10000));
           if (!(bits & EV_IP_LINK_UP)) {
-            /* BUG! While waiting for link-up,
-             * another station can connect to Server-end,
-             * Steal ATTACH state then INFORM, LEAVE, NOTIFY,
-             * next line generates errors */
             ESP_LOGW(TAG, "STA [initiator] No link, giving up");
             swap_deauth(-1); /* Give up */
             continue;
@@ -403,29 +399,19 @@ static void swap_main_task (void* pvParams) {
           esp_netif_ip_info_t ip_info_sta = {0};
           ESP_ERROR_CHECK(esp_netif_get_ip_info(state.netif_sta, &ip_info_sta));
           target.u_addr.ip4.addr = ip_info_sta.gw.addr;
-          // TODO: Need to enter inform on connect
           int res = wrpc_connect(state.netif_sta, &target); // blocks until conn-close
           if (res != ESP_OK) {
             ESP_LOGE(TAG, "Failed spawning client, exit: %i", res);
+	    swap_deauth(-1);
           }
-          swap_deauth(res);
-          break;
+          // inform_complete causes succesful deauth() on disconnect
         } else { /* non-initiator */
-          ESP_LOGI(TAG, "Waiting for socket, initiator: %i, PEER%i:", state.initiate_to != -1, state.initiate_to);
+	  vTaskDelay(pdMS_TO_TICKS(1000));
           wifi_sta_list_t stations = {0};
           ESP_ERROR_CHECK(esp_wifi_ap_get_sta_list(&stations));
-          if (stations.num == 0) { /* No-one's around */
-            swap_deauth(-1);
-            break;
-          }
-          // int res = rpc_wait_for_peer_socket(10000 / portTICK_PERIOD_MS);
-          int err = -1; // TODO: semaphore on close? <-- urgent
-          if (err == ESP_OK) {
-            snail_transition(INFORM);
-          } else {
-            ESP_LOGE(TAG, "No call.. giving up");
-            swap_deauth(-1);
-          }
+          ESP_LOGI(TAG, "Waiting for socket, initiator: %i, stations count: %i:", state.initiate_to != -1, stations.num);
+	  /* No-one's around */
+          if (stations.num == 0) swap_deauth(-1);
         }
       } break;
 
@@ -436,10 +422,12 @@ static void swap_main_task (void* pvParams) {
       case LEAVE: {
         ESP_LOGI(TAG, "Leaving, was initator: %i", state.initiate_to);
         if (state.initiate_to != -1){
+	  state.initiate_to = -1;
           int err = esp_wifi_disconnect();
           ESP_ERROR_CHECK_WITHOUT_ABORT(err);
-        }
-        state.initiate_to = -1;
+        } else {
+	  // TODO: deauth all associated stations?
+	}
         /* Not sure- drop all accumulated events? */
         xEventGroupClearBits(state.events, EV_AP_NODE_ATTACHED);
         snail_transition(NOTIFY);
