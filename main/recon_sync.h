@@ -2,13 +2,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* redefine throw as a whitespace */
-// #define throw
-
-
+#include "pwire.h"
 struct ngn_state {
-  bool initiator;
+  int initiator;
   char* buffer;
   unsigned short buffer_cap;
   void* ne;
@@ -16,7 +12,7 @@ struct ngn_state {
   // negentropy::storage::Vector storage;
 };
 
-struct ngn_state* ngn_init (bool initiator, char *buffer, unsigned short* io_length);
+struct ngn_state* ngn_init (int initiator, char *buffer, unsigned short* io_length);
 void ngn_deinit(struct ngn_state* handle);
 int ngn_reconcile(struct ngn_state* handle, const unsigned short m_size, unsigned char* io_type);
 

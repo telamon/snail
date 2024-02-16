@@ -433,7 +433,7 @@ static void swap_main_task (void* pvParams) {
   vTaskDelete(NULL);
 }
 
-void swap_init(void) {
+void swap_init(pwire_handlers_t *wire_io) {
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
 
@@ -473,7 +473,7 @@ void swap_init(void) {
   /* Boot up Radios */
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  wrpc_init();
+  wrpc_init(wire_io);
   // rpc_listen(state.netif_ap);
 
   /* Initialize task */

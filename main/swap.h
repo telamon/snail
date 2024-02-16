@@ -2,6 +2,7 @@
 #define SWAP_H
 #include "esp_err.h"
 #include <stdint.h>
+#include "pwire.h"
 /* Defaults */
 #define CLOAK_SSID 1
 #define CHANNEL 6
@@ -15,7 +16,7 @@
  * previously synced peer */
 #define BACKOFF_TIME 20
 
-void swap_init(void);
+void swap_init(pwire_handlers_t *wire_io);
 void swap_deauth(int exit_code);
 void swap_deinit(void);
 void swap_dump_peer_list(void);

@@ -48,7 +48,7 @@ The snail protocol itself is simple:
 Longpress on button interrupts the SNAIL cycle and puts the device into private mode.
 
 Interaction with a smartphone.
-- Android 8+ has builtin NAN support, Apple requires SoftAP
+- Android 8+ has builtin NAN support, Apple requires SoftAP?
 - BLE
 - USB-C
 - ~~[Wifi Direct](https://github.com/espressif/esp-idf/issues/6522#issuecomment-1878635833)~~
@@ -59,11 +59,11 @@ Interaction with a smartphone.
 
 Nan is truly glitchy. It's cool to sync clocks over a wide area but
 it does not relay data or service info.
-We're not building a mesh, we're bulding a Swarm.
+We're not building a mesh, we're bulding a _Swarm_.
 
 - OUI & VSIE allows snail beacons to be distinguished between nodes.
-- The dual v-netif APSTA mode allows much more efficient discovery and exchange.
-- Always on AP solves mobile connectivity.
+- The dual v-netif APSTA mode allows efficient discovery and exchange.
+- Always on AP solves mobile connectivity (for now).
 
 
 `Iteration 0` - Exploring the boundaries of Wifi NAN
@@ -88,5 +88,4 @@ bc1qqjgz9fqqxj7kndqelecxmdtqgvtzqrukma5599
 
 ## License
 
-2024 © Tony Ivanov - MPL Decent Labs
-
+Apache-2.0 © Decent Labs 2024

@@ -49,7 +49,7 @@ static void init_display(void) {
 }
 
 #define BW(s, w) (((s) % (w)) / ((float)w))
-// #define MAX(a, b) ((a)>(b)?(a):(b)) - redefined?
+#define MAX(a, b) ((a)>(b)?(a):(b)) // - redefined?
 void display_state (struct snail_state* state) {
   const TickType_t seed = xTaskGetTickCount();
   /* Global Animation Duration */
@@ -67,7 +67,7 @@ void display_state (struct snail_state* state) {
     }
     case NOTIFY: {
       const float f = sin(M_PI * 2 * fmod(t0 * 4, 1));
-      led_strip_set_pixel(led_strip, 0, 0, 0 , f * pow(t0, 3) * 0xff);
+      led_strip_set_pixel(led_strip, 0, 0, 0 , f * pow(t0, 2) * 0xff);
       ESP_ERROR_CHECK(led_strip_refresh(led_strip));
       return;
     }
@@ -137,7 +137,7 @@ void app_main(void) {
   /* SoftAP Swapping */
 #ifdef PROTO_SWAP
   uint64_t start = esp_timer_get_time();
-  swap_init();
+  swap_init(NULL);
   uint32_t delta = (esp_timer_get_time() - start) / 1000;
   ESP_LOGI(TAG, "Swap init + seek %"PRIu32" ms", delta);
   // state.status = SEEK;

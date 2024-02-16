@@ -1,6 +1,18 @@
 #include "store.h"
+#include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
+#include "driver/spi_common.h"
 #include "sdmmc_cmd.h"
 #include <dirent.h>
+
+#define SDMODE_SPI
+#ifdef SDMODE_SPI
+#define SD_CLK GPIO_NUM_22
+#define SD_MISO GPIO_NUM_19
+#define SD_MOSI GPIO_NUM_23
+#define SD_CS GPIO_NUM_33
+#endif
+
 
 #define MOUNT_POINT "/sd0"
 static const char TAG[] = "store.c";

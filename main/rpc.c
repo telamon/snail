@@ -97,7 +97,6 @@ static int recv_msg (int socket) {
   return offset;
 }
 
-
 struct conversation_handlers {
   void (*on_init) (bool initiator, uint16_t MAX_SIZE);
   int (*on_message) (bool initiator, struct tlv_header *io_header, char *io_message);

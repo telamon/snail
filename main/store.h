@@ -1,22 +1,10 @@
 /**
- * Exposes SDMMC function for reading/writing blocks
  * THIS FILE IS JUNK ATM.
  */
 
 /* #include "driver/sdspi_host.h" */
 #include <stdint.h>
-#include "esp_vfs_fat.h"
-#include "sdmmc_cmd.h"
-#include "driver/spi_common.h"
-
-#define SDMODE_SPI
-#ifdef SDMODE_SPI
-#define SD_CLK GPIO_NUM_22
-#define SD_MISO GPIO_NUM_19
-#define SD_MOSI GPIO_NUM_23
-#define SD_CS GPIO_NUM_33
-#endif
-
+#include "esp_err.h"
 esp_err_t storage_init(void);
 esp_err_t storage_deinit(void);
 
@@ -50,9 +38,32 @@ struct block_descriptor {
  * delete_block()
  *
  * Is it faster to use sd-cards without FS?
+ * update: yes it is, see below
  *
  * I know to little to do this right now.
  * First step is to get a solid on connectivity.
  * Need to benchmark and unglitch NAN or SW-AP
+ *
+ * # 24-02-16
+ * There are a few flash-friendly filesystems out there.
+ * Everytime a sector in flash is erased it gets slightly damaged.
+ * So most solutions to this is "log-based" writes where all entries
+ * where all entries just go into the next sector, treating the memory as a ring-buffer.
+ * And second type is "copy-on-write", where each edit copies the entry to a new location
+ * and marks the previous as obsolete.
+ * They both come with tradeoffs and strengths.
+ *
+ * https://github.com/armink/FlashDB/blob/master/demos/esp32_spi_flash/main/main.c
+ * https://github.com/littlefs-project/littlefs
+ *
+ * None of them is a perfect fit. littlefs is nice while Flashdb is the right amount of little.
+ * (does TSDB support unordered inserts?)
+ * Further since our model is cryptographically signed blocks we already know
+ * that that no modification will be done to the bulk of the data.
+ * What we essentially could use is a wear-leveling indexing system.
+ *
+ *
+ * Good news is that we have about 1-2MB free builtin flash for storage in the prototype.
+ * So external memory is not required.
  */
 int store_list_blocks();
