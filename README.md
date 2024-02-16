@@ -3,31 +3,39 @@
 
 snail is a relayed protocol for portable unsupervised sneakernet devices.
 
-This repository contains an implemenation that uses Wifi ~~NAN~~ for peer discovery and communication
+This repository contains an implemenation that uses _hacked_ Wifi ~~NAN~~ for peer discovery and communication
 in order to iterate and simplify.
 
 ## What you need
-For now, an ESP32/S2 + battery and an MicroSD for storage.
 
-Optional addons:
- - Button
- - RGB-Led
- - OLED Display (SH1107)
+For now, an ESP32 + battery ~~and an MicroSD for storage.~~
 
-<!--
-## Releases
+Optionally supported addons:
+ - in: Button
+ - out: RGB-Led(SK6812)
+ - out: OLED Display (SH1107)
 
-> Don't ask, just flash!
-
-[M5 Atom Lite]() [Firmware]()
-[M5 Stack]() [Firmware]()
-[Wemos + SH1106LCD]() [Firmware]()
--->
 
 ## Flashing instructions
 
-While prebuilt firmware is being built.
+### Prebuilt Firmware
 
+> Don't ask, just flash!
+
+Pick a firmware:
+
+- [Generic ESP32](./releases/SNAIL-0.1.0-esp32.bin)
+- [Generic ESP32 S2](./releases/SNAIL-0.1.0-esp32s3.bin)
+- [Generic ESP32 C3](./releases/SNAIL-0.1.0-esp32s3.bin)
+- [Generic ESP32 S3](./releases/SNAIL-0.1.0-esp32s3.bin)
+- [M5 Atom S3](./releases/SNAIL-0.1.0-esp32s3-M5Atom.bin) 0.85'' IPS-display
+
+```
+pip install esptool
+esptool.py -b 300000 write_flash -z 0x0 DOWNLOADED_FILENAME_BIN
+```
+
+### From Source
 
 #### 1. Clone this repo
 
@@ -60,7 +68,7 @@ Sneakernet is the art of transferring data using physical transportation and wit
 We'll rely on eventual message delivery within geographical bounds. _- unless you travel further_
 
 The snail protocol itself is simple:  
-**Search** for beacons, **Notify** presence, **Attach** to peer, **Inform** news, **Leave** and restart.
+**Search** for beacons, **Notify** presence, **Attach** to peer, **Inform** news, **Leave** and repeat.
 
 
 ### Message Format
@@ -77,6 +85,9 @@ Interaction with a smartphone.
 - ~~[Wifi Direct](https://github.com/espressif/esp-idf/issues/6522#issuecomment-1878635833)~~
 
 ## References / Journey
+
+`Iteration 2` - Websockets and NAND Flash
+
 
 `Iteration 1` - Bye NAN hello SWAP
 
