@@ -1,5 +1,5 @@
 # SNAIL
-`status: research iteraton: 1`
+`status: reverse iteraton: 1`
 
 snail is a relayed protocol for portable unsupervised sneakernet devices.
 
@@ -13,22 +13,20 @@ For now, an ESP32 + battery ~~and an MicroSD for storage.~~
 Optionally supported addons:
  - in: Button
  - out: RGB-Led(SK6812)
- - out: OLED Display (SH1107)
+ - ~~out: OLED Display (SH1107)~~
 
 
 ## Flashing instructions
 
-### Prebuilt Firmware
-
-> Don't ask, just flash!
+### Prebuilt Firmware _- Don't ask, just flash!_
 
 Pick a firmware:
 
 - [Generic ESP32](./releases/SNAIL-0.1.0-esp32.bin)
 - [Generic ESP32 S2](./releases/SNAIL-0.1.0-esp32s3.bin)
-- [Generic ESP32 C3](./releases/SNAIL-0.1.0-esp32s3.bin)
+- ~~[Generic ESP32 C3](./releases/SNAIL-0.1.0-esp32s3.bin)~~
 - [Generic ESP32 S3](./releases/SNAIL-0.1.0-esp32s3.bin)
-- [M5 Atom S3](./releases/SNAIL-0.1.0-esp32s3-M5Atom.bin) 0.85'' IPS-display
+- ~~[M5 Atom S3](./releases/SNAIL-0.1.0-esp32s3-M5Atom.bin) 0.85'' IPS-display~~
 
 ```
 pip install esptool

@@ -2,6 +2,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include "monocypher.h"
 #include "pwire.h"
 struct ngn_state {
   int initiator;
@@ -11,6 +12,7 @@ struct ngn_state {
   void* storage;
   // negentropy::storage::Vector storage;
 };
+pwire_handlers_t *recon_init_io();
 
 struct ngn_state* ngn_init (int initiator, char *buffer, unsigned short* io_length);
 void ngn_deinit(struct ngn_state* handle);

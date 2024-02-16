@@ -261,7 +261,7 @@ static void wifi_event_handler(
         break;
       case WIFI_EVENT_AP_STACONNECTED:{
         wifi_event_ap_staconnected_t *event = (wifi_event_ap_staconnected_t *) event_data;
-        ESP_LOGI(TAG, "EV_AP: Station "MACSTR" joined, AID=%d",MAC2STR(event->mac), event->aid);
+        ESP_LOGI(TAG, "EV_AP: Station joined MAC="MACSTR" AID=%d",MAC2STR(event->mac), event->aid);
         // if (snail_current_status() == NOTIFY) ??
         xEventGroupSetBits(state.events, EV_AP_NODE_ATTACHED);
       } break;
@@ -331,17 +331,12 @@ static int swap_seek_scan(void) {
     );
   }
   ESP_ERROR_CHECK(esp_wifi_clear_ap_list());
-
-  int ret = -1;
-  /* Initiate Connection */
-  if (selected_peer >= 0) ret = sta_associate(state.peers[selected_peer].bssid); /* Connect */
-  state.initiate_to = selected_peer;
-  return ret;
+  return selected_peer;
 }
 
 static void swap_main_task (void* pvParams) {
   /* kinda silly, but with STA-AP mode we SEEK & NOTIFY simultaneously <3 */
-  snail_transition(SEEK);
+  snail_transition(esp_random() & 1 ? SEEK : NOTIFY);
 
   while (1) {
     peer_status s = snail_current_status();
@@ -350,10 +345,29 @@ static void swap_main_task (void* pvParams) {
         UBaseType_t uxHighWaterMark;
         uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
         ESP_LOGW(TAG, "free stack: %i WORD, heap: %"PRIu32"\n", uxHighWaterMark, esp_get_free_heap_size());
-
         /* Listen for beacons & associate */
-        if (swap_seek_scan() == ESP_OK) snail_transition(ATTACH);
-        else snail_transition(NOTIFY);
+        int selected_peer = swap_seek_scan();
+        if (selected_peer < 0) {
+          snail_transition(NOTIFY);
+          break;
+        }
+        /* If someone connected while scanning, go back back to sleep */
+        wifi_sta_list_t stations = {0};
+        ESP_ERROR_CHECK(esp_wifi_ap_get_sta_list(&stations));
+        if (0 < stations.num) {
+          ESP_LOGI(TAG, "There are %i stations connected, seek aborted", stations.num);
+          snail_transition(NOTIFY);
+          break;
+        }
+
+        /* Initiate Connection */
+        int err = sta_associate(state.peers[selected_peer].bssid); /* Connect */
+        if (err == ESP_OK) {
+          state.initiate_to = selected_peer;
+          snail_transition(ATTACH);
+        } else {
+          snail_transition(NOTIFY);
+        }
       } break;
 
       case NOTIFY: {

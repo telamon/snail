@@ -5,7 +5,7 @@
 #include "freertos/semphr.h"
 #include "freertos/timers.h"
 #include "esp_websocket_client.h"
-#define assert(expr) ESP_ERROR_CHECK((expr) ? ESP_OK : ESP_FAIL)
+// #define assert(expr) ESP_ERROR_CHECK((expr) ? ESP_OK : ESP_FAIL)
 static const char *TAG_S = "wrpc.c:HOST";
 static const char *TAG_C = "wrpc.c:GUEST";
 static pwire_handlers_t handlers = {0};
@@ -29,18 +29,15 @@ static void cframe_handler(void *args, esp_event_base_t base, int32_t event_id, 
   esp_websocket_client_handle_t client = args;
   switch(event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
-      ESP_LOGI(TAG_C, "client connection established");
-      if (handlers.on_open != NULL) {
-	pwire_event_t event = { .initiator = true, .message = NULL, .size = 0 };
-	pwire_ret_t reply = handlers.on_open(&event);
-	if (reply == REPLY) {
-	  assert(event.message != NULL);
-	  assert(event.size != 0);
-	  esp_websocket_client_send_bin(client, (const char*) event.message, event.size, portMAX_DELAY);
-	} else {
-	  kill_client(NULL);
-	}
-      }
+      ESP_LOGI(TAG_C, "connection established");
+      assert(handlers.on_open != NULL);
+      pwire_event_t event = { .initiator = true, .message = NULL, .size = 0 };
+      pwire_ret_t reply = handlers.on_open(&event);
+      /* Initiators must initiate on open */
+      assert(reply == PW_REPLY);
+      assert(event.message != NULL);
+      assert(event.size != 0);
+      esp_websocket_client_send_bin(client, (const char*) event.message, event.size, portMAX_DELAY);
       break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGI(TAG_C, "WEBSOCKET_EVENT_DISCONNECTED");
@@ -55,8 +52,17 @@ static void cframe_handler(void *args, esp_event_base_t base, int32_t event_id, 
     case WEBSOCKET_EVENT_DATA:
 	xTimerReset(shutdown_timer, portMAX_DELAY);
 	if (esp_websocket_client_is_connected(client)) {
-	  // uint8_t feed[32];
-	  // esp_websocket_client_send_bin(client, (const char*)feed, 32, portMAX_DELAY);
+	  if (handlers.on_open != NULL) {
+	    pwire_event_t event = { .initiator = true, .message = NULL, .size = 0 };
+	    pwire_ret_t reply = handlers.on_open(&event);
+	    if (reply == PW_REPLY) {
+	      assert(event.message != NULL);
+	      assert(event.size != 0);
+	      esp_websocket_client_send_bin(client, (const char*) event.message, event.size, portMAX_DELAY);
+	    } else {
+	      kill_client(NULL);
+	    }
+	  }
 	}
 	break;
     case WEBSOCKET_EVENT_ERROR:
@@ -168,7 +174,7 @@ static esp_err_t frame_handler(httpd_req_t *req) {
       .size = ws_pkt.len,
     };
     pwire_ret_t rep = handlers.on_data(&ev);
-    if (rep == REPLY) {
+    if (rep == PW_REPLY) {
       err = httpd_ws_send_frame(req, &ws_pkt);
       free(buf);
       if (err != ESP_OK) {
@@ -193,18 +199,24 @@ static const httpd_uri_t ws = {
 
 esp_err_t onconnect(httpd_handle_t hd, int sockfd) {
   ESP_LOGI(TAG_S, "httpd connected %i", sockfd);
+  if (!xSemaphoreTake(client_lock, pdMS_TO_TICKS(1000))) {
+    return ESP_FAIL; // TODO: rename client_lock to connection_lock
+  }
   if (handlers.on_open != NULL) {
     pwire_event_t ev = { .initiator = false, .size = 0, .message = NULL };
     handlers.on_open(&ev);
   }
   return ESP_OK; // -1 to fast disconnect
 }
+
 void onclose(httpd_handle_t hd, int sockfd) {
   ESP_LOGI(TAG_S, "httpd disconnected %i", sockfd);
   if (handlers.on_close != NULL) {
     pwire_event_t ev = { .initiator = false, .size = 0, .message = NULL };
     handlers.on_close(&ev);
   }
+
+  xSemaphoreGive(client_lock);
 }
 
 esp_err_t wrpc_init(pwire_handlers_t *message_handlers) {

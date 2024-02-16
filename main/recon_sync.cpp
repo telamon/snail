@@ -3,12 +3,60 @@
 #include "negentropy/types.h"
 #include "negentropy/storage/Vector.h"
 #include "esp_log.h"
-#include "sha-256.h"
+#include "sha-256.h" // <-- use Blake2b from Monocypher instead?
 #include "esp_random.h"
+#include "string.h"
 
 #define HASH2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[30], (a)[31]
 #define HASHSTR "%02x%02x %02x%02x..%02x%02x"
-static const char* TAG = "NEGEN";
+static const char* TAG = "recon";
+static uint8_t *buffer = NULL;
+
+static pwire_ret_t recon_onopen(pwire_event_t *ev) {
+  ESP_LOGI(TAG, "pwire_onopen initiator: %i", ev->initiator);
+  if (buffer != NULL) {
+    ESP_LOGE(TAG, "memory still in use");
+    abort();
+  }
+  buffer = (uint8_t*)calloc(1, 4096);
+  if (ev->initiator) {
+    buffer[0] = 0xFE;
+    buffer[1] = 0xED;
+    ev->message = buffer;
+    ev->size = 2;
+  }
+  return PW_REPLY;
+}
+
+static pwire_ret_t recon_ondata(pwire_event_t *ev) {
+  ESP_LOGI(TAG, "pwire_data initiator: %i, msg-length: %"PRIu32, ev->initiator, ev->size);
+  if (ev->initiator) return PW_CLOSE;
+  buffer[0] = 0xBE;
+  buffer[1] = 0xEF;
+  ev->message = buffer;
+  ev->size = 2;
+  return PW_REPLY;
+}
+
+static void recon_onclose(pwire_event_t *ev) {
+  ESP_LOGI(TAG, "pwire_data initiator: %i", ev->initiator);
+  if (buffer == NULL) {
+    ESP_LOGE(TAG, "expected memory is gone");
+    abort();
+  }
+  free(buffer);
+  buffer = NULL;
+}
+
+pwire_handlers_t wire_io = {
+  .on_open = recon_onopen,
+  .on_data = recon_ondata,
+  .on_close = recon_onclose
+};
+
+pwire_handlers_t *recon_init_io(void) {
+  return &wire_io;
+}
 
 static auto storage = negentropy::storage::Vector();
 static bool store_loaded = false;

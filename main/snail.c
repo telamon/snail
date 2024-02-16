@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 #include "picofeed.h"
 #include "string.h"
+#include "recon_sync.h"
 
 static struct snail_state state = {0};
 
@@ -118,18 +119,6 @@ void init_POP01(void) {
   pico_feed_append(&feed, (uint8_t*)msg, strlen(msg), pair);
 }
 
-static pwire_ret_t dummy_onopen(pwire_event_t *ev) {
-  ESP_LOGI(TAG, "pwire_onopen");
-  return 0;
-}
-static pwire_ret_t dummy_ondata(pwire_event_t *ev) {
-  ESP_LOGI(TAG, "pwire_data");
-  return CLOSE;
-}
-static void dummy_onclose(pwire_event_t *ev) {
-  ESP_LOGI(TAG, "pwire_data");
-}
-
 /* The main task drives optional UI
  * and wifi NAN discovery.
  */
@@ -141,18 +130,14 @@ void app_main(void) {
   display_state(&state);
   /*storage_init();*/
   /*storage_deinit();*/
-  pwire_handlers_t pwire = {
-    .on_open = dummy_onopen,
-    .on_close = dummy_onclose,
-    .on_data = dummy_ondata
-  };
+  pwire_handlers_t *wire_io = recon_init_io();
 #ifdef PROTO_NAN
   nanr_discovery_start();
 #endif
   /* SoftAP Swapping */
 #ifdef PROTO_SWAP
   uint64_t start = esp_timer_get_time();
-  swap_init(&pwire);
+  swap_init(wire_io);
   uint32_t delta = (esp_timer_get_time() - start) / 1000;
   ESP_LOGI(TAG, "Swap init + seek %"PRIu32" ms", delta);
   // state.status = SEEK;

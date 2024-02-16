@@ -16,7 +16,7 @@ BAUD=300000
 for dev in /dev/ttyUSB*; do
     if [ -e "$dev" ]; then
         echo "Flashing device at $dev"
-        idf.py flash -b $BAUD -p "$dev" "$@" &
+        idf.py app-flash -b $BAUD -p "$dev" "$@" &
     fi
 done
 
