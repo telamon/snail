@@ -6,6 +6,13 @@
 #include "freertos/timers.h"
 #include "esp_websocket_client.h"
 #include "snail.h"
+/***
+ *  TODO: Rename this wrpc->ws_wire
+ *  Because RPC-protocl running on the wire
+ *  is not included here.
+ *
+ * ********************/
+
 // #define assert(expr) ESP_ERROR_CHECK((expr) ? ESP_OK : ESP_FAIL)
 static const char *TAG_S = "wrpc.c:HOST";
 static const char *TAG_C = "wrpc.c:GUEST";

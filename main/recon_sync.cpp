@@ -6,11 +6,35 @@
 #include "sha-256.h" // <-- use Blake2b from Monocypher instead?
 #include "esp_random.h"
 #include "string.h"
+#include <assert.h>
 
+/****
+ *
+ *  After some quick calculation,
+ *  negentropy is overkill for synchronizing a store of 2MB
+ *  Maybe i't possible build a BTee store over FlashDB
+ *  but prototype version might as well just use no
+ *  FS and do a simple 4k aligned ringbuffer of available
+ *  flash.
+ *
+ *
+ ***********************************************************/
 #define HASH2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[30], (a)[31]
 #define HASHSTR "%02x%02x %02x%02x..%02x%02x"
+#define MAX_FRAME_SIZE 4096
+#define ID_SIZE 32
 static const char* TAG = "recon";
 static uint8_t *buffer = NULL;
+
+static auto storage = negentropy::storage::Vector();
+static negentropy::Negentropy<negentropy::storage::Vector> *ne = NULL;
+
+enum MSG_TYPES {
+  T_OK = 0,
+  T_RECONCILE,
+  T_BLOCK,
+  T_BLOCK_REQ
+};
 
 static pwire_ret_t recon_onopen(pwire_event_t *ev) {
   ESP_LOGI(TAG, "pwire_onopen initiator: %i", ev->initiator);
@@ -18,24 +42,93 @@ static pwire_ret_t recon_onopen(pwire_event_t *ev) {
     ESP_LOGE(TAG, "memory still in use");
     abort();
   }
-  buffer = (uint8_t*)calloc(1, 4096);
+  /* Initialize link-state */
+  buffer = (uint8_t*)calloc(1, 4098);
+
+  ne = new Negentropy<negentropy::storage::Vector>(storage, 4096);
   if (ev->initiator) {
-    buffer[0] = 0xFE;
-    buffer[1] = 0xED;
+    std::string msg = ne->initiate();
+    ESP_LOGI(TAG, "ngn_init() first msg size: %zu", msg.length());
+    buffer[0] = T_RECONCILE;
+    memcpy(buffer + 1, msg.data(), msg.length());
     ev->message = buffer;
-    ev->size = 2;
+    ev->size = msg.length() + 1;
   }
   return PW_REPLY;
 }
 
+static std::vector<std::string> have;
+static std::vector<std::string> need;
+static std::optional<std::string> reply;
 static pwire_ret_t recon_ondata(pwire_event_t *ev) {
-  ESP_LOGI(TAG, "pwire_data initiator: %i, msg-length: %"PRIu32, ev->initiator, ev->size);
-  if (ev->initiator) return PW_CLOSE;
-  buffer[0] = 0xBE;
-  buffer[1] = 0xEF;
-  ev->message = buffer;
-  ev->size = 2;
-  return PW_REPLY;
+  ESP_LOGI(TAG, "pwire_data initiator: %i, msg-length: %" PRIu32, ev->initiator, ev->size);
+  if (!ev->size) return PW_CLOSE;
+  enum MSG_TYPES type = (enum MSG_TYPES) ev->message[0];
+  std::string_view msg(reinterpret_cast<const char*>(ev->message + 1), ev->size);
+
+  if (ev->initiator) {
+    switch (type) {
+      case T_RECONCILE: {
+	reply = ne->reconcile(msg, have, need);
+	if (!reply) {
+	  // assert(have.empty());
+	  // assert(need.empty();
+	  return PW_CLOSE;
+	}
+      case T_OK:
+
+	if (!have.empty()) {
+	  auto& hash = have.back();
+	  ESP_LOGI(TAG, "HAVE --> " HASHSTR, HASH2STR(hash.data()));
+	  buffer[0] = T_BLOCK;
+	  int n = pico_repo.read_block(buffer + 1, (uint8_t*)hash.data());
+	  if (n < 0) {
+	    ESP_LOGE(TAG, "read_block failed! (%i)", n);
+	    return PW_CLOSE;
+	  }
+	  have.pop_back();
+	  ev->size = ID_SIZE + n;
+	  ev->message = buffer;
+	}
+
+	if (!need.empty()) {
+	  auto& hash = need.back();
+	  ESP_LOGI(TAG, "NEED <-- " HASHSTR, HASH2STR(hash.data()));
+	  buffer[0] = T_BLOCK_REQ;
+	  memcpy(buffer + 1, hash.data(), ID_SIZE);
+	  need.pop_back();
+	  ev->size = ID_SIZE + 1;
+	  ev->message = buffer;
+	  return PW_REPLY;
+	}
+
+	/* Do next reconcilliation round */
+	buffer[0] = T_RECONCILE;
+	memcpy(buffer + 1, reply->data(), reply->length());
+	ev->message = buffer;
+	ev->size = reply->length() + 1;
+	return PW_REPLY;
+      }
+    }
+  } else {
+    switch (type) {
+      case T_RECONCILE: {
+	std::string reply = ne->reconcile(msg);
+	if (reply.empty()) {
+	  ESP_LOGI(TAG, "ngn_reconcile(I%i): reconcilliation complete!", ev->initiator);
+	  return PW_CLOSE; // ALL DONE
+	}
+	ESP_LOGI(TAG, "ngn_reconcile(I%i) reply: %zu", ev->initiator, reply.length());
+
+	buffer[0] = T_RECONCILE;
+	memcpy(buffer + 1, reply.data(), reply.length());
+	ev->message = buffer;
+	ev->size = reply.length() + 1;
+	return PW_REPLY;
+      }
+    }
+  }
+  abort(); // unreachable
 }
 
 static void recon_onclose(pwire_event_t *ev) {
@@ -46,6 +139,7 @@ static void recon_onclose(pwire_event_t *ev) {
   }
   free(buffer);
   buffer = NULL;
+  delete ne;
 }
 
 pwire_handlers_t wire_io = {
@@ -54,15 +148,7 @@ pwire_handlers_t wire_io = {
   .on_close = recon_onclose
 };
 
-pwire_handlers_t *recon_init_io(void) {
-  return &wire_io;
-}
-
-static auto storage = negentropy::storage::Vector();
-static bool store_loaded = false;
-
-static void init_storage(bool initiator) {
-  if (store_loaded) return;
+static void init_dummy_store(bool initiator) {
   uint8_t hash[16][32];
   for (int i = 0; i < 16; i++) {
     char v[12];
@@ -87,91 +173,32 @@ static void init_storage(bool initiator) {
   //   storage.insert(timestamp, id);
   // }
   storage.seal();
-  store_loaded = true;
 }
 
-ngn_state* ngn_init (bool initiator, char *buffer, unsigned short* in_out) {
-  init_storage(initiator);
-  auto state = new ngn_state();
-  state->initiator = initiator;
-  state->buffer = buffer;
-  state->buffer_cap = *in_out;
-  *in_out = 0;
-  state->ne = new Negentropy<negentropy::storage::Vector>(storage, state->buffer_cap);
-  auto ne = static_cast<Negentropy<negentropy::storage::Vector>*>(state->ne);
-  ESP_LOGI(TAG, "ngn_init(%i, cap: %i)", initiator, state->buffer_cap);
-
-  if (initiator) {
-    std::string msg = ne->initiate();
-    ESP_LOGI(TAG, "ngn_init() first msg size: %zu", msg.length());
-    memcpy(buffer, msg.data(), msg.length());
-    *in_out = msg.length();
-  }
-  return state;
+pwire_handlers_t *recon_init_io(void) {
+  init_dummy_store(true); // TODO: require param store ptr
+  return &wire_io;
 }
 
-void ngn_deinit(ngn_state* handle) {
-  delete static_cast<Negentropy<negentropy::storage::Vector>*>(handle->ne);
-  delete handle;
-}
 
-static std::vector<std::string> have;
-static std::vector<std::string> need;
-
-int ngn_reconcile(ngn_state* handle, const unsigned short m_size, unsigned char* io_type) {
-  auto ne = static_cast<Negentropy<negentropy::storage::Vector>*>(handle->ne);
-  std::string_view msg(reinterpret_cast<const char*>(handle->buffer), m_size);
-  unsigned char type = *io_type;
-  // Client Recon
-  if (handle->initiator) {
-    /* WIP
-    if (need.size()) {
-      *io_type = 2; // BLOCK_REQ
-      auto id = need.at(need.size() - 1);
-      memcpy(handle->buffer, id.data(), negentropy::ID_SIZE);
-      need.pop_back();
-      return negentropy::ID_SIZE;
-    }
-    if (have.size()) {
-    }
-    */
-    std::optional<std::string> reply = ne->reconcile(msg, have, need);
-
-    // TODO: Stash have, need, reply;
-    // Alternate Have/Need until both lists empty;
-    // Transmit reply.
-    // Repeat until have,needs and reply is empty.
-
-    for (const auto &item: have) {
-      ESP_LOGI(TAG, "HAVE --> " HASHSTR, HASH2STR(item.data()));
-    }
-    for (const auto &item: need) {
-      ESP_LOGI(TAG, "NEED <-- " HASHSTR, HASH2STR(item.data()));
-    }
-
-    if (!reply) {
-      ESP_LOGI(TAG, "ngn_recon: reconcilliation complete!");
-      return 0;
-    }
-
-    *io_type = 1;
-    ESP_LOGI(TAG, "ngn_reconcile(init: %i) reply: %zu", handle->initiator, reply->length());
-    memcpy(handle->buffer, reply->data(), reply->length());
-    return reply->length();
+struct RepoWrapper : negentropy::StorageBase {
+  uint64_t size() {
+    return 0;
   }
 
-  // Server Recon
-  else {
-    std::string reply = ne->reconcile(msg);
+  const negentropy::Item &getItem(size_t i) {
 
-    if (reply.empty()) {
-      ESP_LOGI(TAG, "ngn_reconcile(init: %i): reconcilliation complete!", handle->initiator);
-      return 0;
-    }
-
-    ESP_LOGI(TAG, "ngn_reconcile(init: %i) reply: %zu", handle->initiator, reply.length());
-    memcpy(handle->buffer, reply.data(), reply.length());
-    *io_type = 1;
-    return reply.length();
   }
-}
+
+  void iterate(size_t begin, size_t end, std::function<bool(const negentropy::Item &, size_t)> cb) {
+
+  }
+
+  size_t findLowerBound(size_t begin, size_t end, const negentropy::Bound &value) {
+
+  }
+
+  negentropy::Fingerprint fingerprint(size_t begin, size_t end) {
+
+  }
+};
