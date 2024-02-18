@@ -3,13 +3,16 @@
 #include "esp_partition.h"
 #include "esp_log.h"
 #include "memory.h"
+#include <stdint.h>
+#include <time.h>
+#include "monocypher.h"
 #define ESP_PARTITION_SUBTYPE_DATA_PiC0 87
 #define ESP_PARTITION_LABEL_PiC0 "PiC0"
 #define SLOT_SIZE 2048
 // 2 Mega Bytes
 #define MEM_SIZE (SLOT_SIZE * 1024)
 #define SLOT_GLYPH 0b10110001
-#define FLAG_TOMB (1 << 1)
+// #define FLAG_TOMB (1 << 1)
 
 static const char TAG[] = "repo.c";
 struct pr_internal {
@@ -23,23 +26,22 @@ struct pr_internal {
  * But pulling 1 to 0 does not.
  */
 typedef struct {
-  uint8_t glyph;
+  uint8_t glyph;  /* magic */
   uint8_t iflags; /* inverted flags */
-  /* Lol this is a waste of space but removes need to erase flash
-   * and have a secondary "updatable" filesystem/registry */
-  uint64_t decay;
-  uint64_t stored_at;
-  uint8_t hash[32];
-  pf_block_t block;
+  uint64_t decay; /* N-Shares counter */
+  uint64_t stored_at; /* Wonky swarmtime */
+  uint8_t hops;	  /* TTL */
+  uint8_t hash[32]; /* Blake2b | builtin sha256 */
+  /* TODO: pad block start to known offset */
+  pf_block_t block; /* start of block */
 } flash_slot_t;
-/*
-typedef struct {
-  size_t start;
-  size_t offset;
-  flash_slot_t slot;
-} pr_slot_iterator_t;
-*/
+
 #define SLOT2ADDR(s) ((((s) * SLOT_SIZE)) % MEM_SIZE)
+
+static flash_slot_t *prf_get_slot (const pico_repo_t *repo, uint16_t idx) {
+  return (flash_slot_t*) repo->_state->mmap_ptr + SLOT2ADDR(idx);
+}
+
 /**
  * @brief Iteraters through ring buffer
  * @return 0: not done, -1: done, empty space reached, 1: done, starting offset reached.
@@ -54,50 +56,79 @@ static int next_slot(const pico_repo_t *repo, pr_iterator_t *iter) {
   if (slot->glyph != SLOT_GLYPH) return -1; /* End of memory reached */
   iter->meta_flags = ~slot->iflags;
   iter->meta_decay = __builtin_clzll(slot->decay);
-  iter->stored_at = slot->stored_at;
+  iter->meta_stored_at = slot->stored_at;
+  iter->meta_hops = slot->hops;
+  iter->meta_hash = slot->hash;
   iter->block = &slot->block;
   return 0;
 }
+
 /**
- * @brief Finds an writable slot.
+ * @brief Finds a writable slot.
  * failing to find an empty slot then next
  * slot in line for recycling is returned.
  */
-const void *find_empty_slot (const pico_repo_t *repo) {
+static int find_empty_slot (const pico_repo_t *repo) {
   pr_iterator_t iter = {0};
-  /* register for our garbage collection */
-  int oldest_tomb = -1;
-  uint64_t oldest_tomb_date = 0;
+  /* registers for our garbage collection */
+  int most_decayed_idx = -1;
+  uint8_t most_decayed_value = UINT8_MAX;
   int oldest_block = -1;
-  uint64_t oldest_date = 0;
-  int most_decayed = -1;
-  uint8_t most_decayed_value = 0;
-  int least_decayed = -1;
-  uint8_t least_decayed_value = 0;
+  uint64_t oldest_date = UINT64_MAX;
 
   int exit = 0;
   while (0 == (exit = next_slot(repo, &iter))) {
-    if (iter.meta_flags & FLAG_TOMB) {
-      // TODO increment tomb registers
-    } else {
-      // TODO increment decayed
+    if (iter.meta_decay < most_decayed_value) {
+      most_decayed_value = iter.meta_decay;
+      /* not sure if doing iterators right but raw offset points to next block, not current */
+      most_decayed_idx = iter.offset - 1;
+    }
+
+    if (iter.meta_decay != 0) { // 0 is synonymous with entombed
+      assert(CANONICAL == pf_typeof(iter.block));
+      uint64_t date = pf_read_utc(iter.block->net.date);
+      if (date < oldest_date) {
+	oldest_date = date;
+	oldest_block = iter.offset - 1;
+      }
     }
   }
+  ESP_LOGI(TAG, "find_empty_slot(search exit: %i), decayed: %i, oldest: %i", exit, most_decayed_idx, oldest_block);
   /* empty space found */
-  if (exit == -1) return repo->_state->mmap_ptr + SLOT2ADDR(iter.start + iter.offset);
-  /* overwrite expired block by age*/
-  if (oldest_tomb != -1) return repo->_state->mmap_ptr + SLOT2ADDR(iter.start + oldest_tomb);
+  if (exit == -1) return iter.start + iter.offset;
+  /* overwrite first most expired block*/
+  if (most_decayed_idx != -1) return iter.start + most_decayed_idx;
   /* overwrite active block by age */
-  return repo->_state->mmap_ptr + SLOT2ADDR(iter.start + oldest_block);
+  return iter.start + oldest_block;
 }
 
-int prf_write_block(const pico_repo_t *repo, const uint8_t *bytes) {
-  pf_block_t *block = (pf_block_t*)bytes;
-  // assert(pf_typeof(block) == PF_BLOCK_CANONICAL)
-  void *slot = find_empty_slot(repo);
-  const int size = pf_sizeof(block);
-  // TODO: Slot struct
-  memcpy(slot, block, size);
+static pr_error_t prf_write_block(const pico_repo_t *repo, const uint8_t *block_bytes, uint8_t hops) {
+  pf_block_t *block = (pf_block_t*)block_bytes;
+  if (CANONICAL != pf_typeof(block_bytes)) return PR_ERROR_UNSUPPORTED_BLOCK_TYPE;
+  if (!pf_verify_block(block, block->net.author)) return PR_ERROR_INVALID_BLOCK;
+  const size_t block_size = pf_sizeof(block);
+  if (block_size + sizeof(flash_slot_t)) return PR_ERROR_BLOCK_TOO_LARGE; // Not 100% accurate, block-struct is counted twice.
+  flash_slot_t *slot = malloc(SLOT_SIZE);
+  slot->glyph = SLOT_GLYPH;
+  slot->stored_at = time(NULL); // TODO: format is wrong
+  slot->hops = hops;
+  // pre-hash the block (block.id is 64 bytes, while hash is 32)
+  // should be equal to hash given to crypto_sign as input.
+  crypto_blake2b(slot->hash, 32, block_bytes, block_size);
+
+  memcpy(&slot->block, block_bytes, block_size);
+
+  int slot_idx = find_empty_slot(repo);
+  flash_slot_t *dst_slot = prf_get_slot(repo, slot_idx);
+  if (dst_slot->glyph != UINT8_MAX) {
+    ESP_ERROR_CHECK(esp_partition_erase_range(repo->_state->partition, SLOT2ADDR(slot_idx), SLOT_SIZE));
+    /* Ensure we erased the mmapped region */
+    if (true) for (uint16_t i = 0; i < SLOT_SIZE; i++) assert(((uint8_t*)dst_slot)[i] == 0xff);
+    else assert(dst_slot->glyph == UINT8_MAX); /* checking glyph should be sufficient */
+  }
+  memcpy(dst_slot, slot, SLOT_SIZE); // write flash
+  free(slot);
+  return slot_idx;
 }
 
 int pr_init(pico_repo_t *repo) {
@@ -125,11 +156,12 @@ int pr_init(pico_repo_t *repo) {
       &repo->_state->mmap_ptr,
       &repo->_state->mmap_handle
   ));
-  repo->next_block = prf_next_block;
+  repo->next = next_slot;
+  repo->write_block = prf_write_block;
   return 0;
 }
 
-int pr_deinit(pico_repo_t *repo) {
+void pr_deinit(pico_repo_t *repo) {
   esp_partition_munmap(repo->_state->mmap_handle);
   repo->_state->mmap_ptr = NULL;
   repo->_state->mmap_handle = 0;
