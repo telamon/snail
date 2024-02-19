@@ -23,6 +23,20 @@ struct pr_internal {
   const void *mmap_ptr;
   esp_partition_mmap_handle_t mmap_handle;
 };
+static void sync(const pico_repo_t *repo) {
+  /* Let's see if this helps */
+  esp_partition_munmap(repo->_state->mmap_handle);
+  repo->_state->mmap_ptr = NULL;
+  ESP_ERROR_CHECK(esp_partition_mmap(
+      repo->_state->partition,
+      0,
+      0x200000,
+      ESP_PARTITION_MMAP_DATA,
+      &repo->_state->mmap_ptr,
+      &repo->_state->mmap_handle
+  ));
+}
+
 /**
  * Understanding flash correctly, when erased
  * all bits are set to 1 - this damages the flash.
@@ -40,7 +54,7 @@ typedef struct {
 } flash_slot_t;
 
 
-static flash_slot_t *prf_get_slot (const pico_repo_t *repo, uint16_t idx) {
+static flash_slot_t *pr_get_slot (const pico_repo_t *repo, uint16_t idx) {
   return (flash_slot_t*) repo->_state->mmap_ptr + SLOT_OFFSET(idx);
 }
 
@@ -48,7 +62,7 @@ static flash_slot_t *prf_get_slot (const pico_repo_t *repo, uint16_t idx) {
  * @brief Iteraters through ring buffer
  * @return 0: not done, -1: done, empty space reached, 1: done, starting offset reached.
  */
-static int next_slot(const pico_repo_t *repo, pr_iterator_t *iter) {
+int pr_next_slot(const pico_repo_t *repo, pr_iterator_t *iter) {
   const void *flash = repo->_state->mmap_ptr;
   iter->block = NULL;
   int first_run = !iter->offset;
@@ -56,11 +70,11 @@ static int next_slot(const pico_repo_t *repo, pr_iterator_t *iter) {
   if (!first_run && vaddr == iter->start * SLOT_SIZE) return 1; /* Wrap around completed */
   const flash_slot_t *slot = flash + vaddr;
   if (slot->glyph != SLOT_GLYPH) return -1; /* End of memory reached */
-  iter->meta_flags = ~slot->iflags;
-  iter->meta_decay = __builtin_clzll(slot->decay);
-  iter->meta_stored_at = slot->stored_at;
-  iter->meta_hops = slot->hops;
-  iter->meta_hash = slot->hash;
+  iter->meta.flags = ~slot->iflags;
+  iter->meta.decay = __builtin_clzll(slot->decay);
+  iter->meta.stored_at = slot->stored_at;
+  iter->meta.hops = slot->hops;
+  iter->meta.hash = slot->hash;
   iter->block = &slot->block;
   return 0;
 }
@@ -79,14 +93,14 @@ static int find_empty_slot (const pico_repo_t *repo) {
   uint64_t oldest_date = UINT64_MAX;
 
   int exit = 0;
-  while (0 == (exit = next_slot(repo, &iter))) {
-    if (iter.meta_decay < most_decayed_value) {
-      most_decayed_value = iter.meta_decay;
+  while (0 == (exit = pr_next_slot(repo, &iter))) {
+    if (iter.meta.decay < most_decayed_value) {
+      most_decayed_value = iter.meta.decay;
       /* not sure if doing iterators right but raw offset points to next block, not current */
       most_decayed_idx = iter.offset - 1;
     }
 
-    if (iter.meta_decay != 0) { // 0 is synonymous with entombed
+    if (iter.meta.decay != 0) { // 0 is synonymous with entombed
       assert(CANONICAL == pf_typeof(iter.block));
       uint64_t date = pf_read_utc(iter.block->net.date);
       if (date < oldest_date) {
@@ -104,7 +118,7 @@ static int find_empty_slot (const pico_repo_t *repo) {
   return iter.start + oldest_block;
 }
 
-static pr_error_t prf_write_block(const pico_repo_t *repo, const uint8_t *block_bytes, uint8_t hops) {
+pr_error_t pr_write_block(const pico_repo_t *repo, const uint8_t *block_bytes, uint8_t hops) {
   pf_block_t *block = (pf_block_t*)block_bytes;
   if (CANONICAL != pf_typeof(block)) return PR_ERROR_UNSUPPORTED_BLOCK_TYPE;
   if (0 != pf_verify_block(block, block->net.author)) return PR_ERROR_INVALID_BLOCK;
@@ -113,6 +127,8 @@ static pr_error_t prf_write_block(const pico_repo_t *repo, const uint8_t *block_
   ESP_LOGI(TAG, "write_block() size: %zu", block_size);
   flash_slot_t *slot = calloc(1, SLOT_SIZE);
   slot->glyph = SLOT_GLYPH;
+  slot->iflags = 0xFF;
+  slot->decay = UINT64_MAX;
   slot->stored_at = time(NULL); // TODO: format is wrong
   slot->hops = hops;
   // pre-hash the block (block.id is 64 bytes, while hash is 32)
@@ -123,7 +139,7 @@ static pr_error_t prf_write_block(const pico_repo_t *repo, const uint8_t *block_
 
   int slot_idx = find_empty_slot(repo);
   ESP_LOGI(TAG, "Writing to slot %i", slot_idx);
-  flash_slot_t *dst_slot = prf_get_slot(repo, slot_idx);
+  flash_slot_t *dst_slot = pr_get_slot(repo, slot_idx);
   if (dst_slot->glyph != UINT8_MAX) {
     ESP_LOGI(TAG, "erazing slot%i: %zu, +%i", slot_idx, (size_t)SLOT_OFFSET(slot_idx), SLOT_SIZE);
     ESP_ERROR_CHECK(esp_partition_erase_range(repo->_state->partition, SLOT_OFFSET(slot_idx), SLOT_SIZE));
@@ -136,6 +152,7 @@ static pr_error_t prf_write_block(const pico_repo_t *repo, const uint8_t *block_
   // ESP_LOGI(TAG, "Flashing via mmap: %p, slot ptr: %p", repo->_state->mmap_ptr, dst_slot);
   // memcpy(dst_slot, slot, SLOT_SIZE); // write flash
   free(slot);
+  sync(repo);
   return slot_idx;
 }
 
@@ -174,8 +191,6 @@ int pr_init(pico_repo_t *repo) {
       &repo->_state->mmap_ptr,
       &repo->_state->mmap_handle
   ));
-  repo->next = next_slot;
-  repo->write_block = prf_write_block;
   return 0;
 }
 

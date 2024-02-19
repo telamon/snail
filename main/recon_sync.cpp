@@ -1,10 +1,7 @@
 #include "recon_sync.h"
 #include "negentropy.h"
-#include "negentropy/types.h"
 #include "negentropy/storage/BTreeMem.h"
 #include "esp_log.h"
-#include "sha-256.h" // <-- use Blake2b from Monocypher instead?
-#include "esp_random.h"
 #include "string.h"
 #include <assert.h>
 
@@ -166,8 +163,8 @@ pwire_handlers_t *recon_init_io(pico_repo_t *block_repository) {
   ESP_LOGI(TAG, "Indexing block repo...");
   pr_iterator_t iter{};
   int i = 0;
-  while (!repo->next(repo, &iter)) {
-    storage.insert(iter.meta_stored_at, std::string_view((const char*)iter.meta_hash, 32));
+  while (!pr_next_slot(repo, &iter)) {
+    storage.insert(pf_read_utc(iter.block->net.date), std::string_view((const char*)iter.meta.hash, 32));
     int bsize = pf_block_body_size(iter.block);
     char *txt = (char*)calloc(1, bsize + 1);
     memcpy(txt, pf_block_body(iter.block), bsize);

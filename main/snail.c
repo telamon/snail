@@ -110,7 +110,7 @@ void display_state (struct snail_state* state) {
 void init_POP01(void) {
   pr_iterator_t iter;
   int n_blocks = 0;
-  while (!repo.next(&repo, &iter)) {
+  while (!pr_next_slot(&repo, &iter)) {
     int bsize = pf_block_body_size(iter.block);
     char *txt = calloc(1, bsize + 1);
     memcpy(txt, pf_block_body(iter.block), bsize);
@@ -128,16 +128,17 @@ void init_POP01(void) {
   char pkstr[64];
   for (int i = 0; i < 32; i++) sprintf(pkstr+i*2, "%02x", pair.pk[i]);
   ESP_LOGI(TAG, "secret initialized:\n %s",pkstr);
-  char msg[] = "Hello neighbourhood";
-  pico_feed_t feed = {0};
-  pf_init(&feed);
-
-  pf_append(&feed, (uint8_t*)msg, strlen(msg), pair);
-  int res = repo.write_block(&repo, (const uint8_t*)pf_get(&feed, 0), 0);
-  ESP_LOGI(TAG, "repo_write_block exit: %i", res);
-  assert(res >= 0);
-
-  pf_deinit(&feed);
+  for (int i = 0; i < 7; i++) {
+    char msg[] = " :Hello neighbourhood";
+    msg[0] = i;
+    pico_feed_t feed = {0};
+    pf_init(&feed);
+    pf_append(&feed, (uint8_t*)msg, strlen(msg), pair);
+    int res = pr_write_block(&repo, (const uint8_t*)pf_get(&feed, 0), 0);
+    ESP_LOGI(TAG, "repo_write_block exit: %i", res);
+    assert(res >= 0);
+    pf_deinit(&feed);
+  }
 }
 
 /* The main task drives optional UI
@@ -165,7 +166,7 @@ void app_main(void) {
   ESP_ERROR_CHECK(gpio_set_direction(BTN, GPIO_MODE_INPUT));
   ESP_ERROR_CHECK(gpio_pullup_en(BTN));
   int hold = gpio_get_level(BTN);
-  TickType_t pressedAt = 000000000;
+  TickType_t pressedAt = 0;
   TickType_t mode_start = xTaskGetTickCount();
 
   ESP_LOGI(TAG, "System ready, higher init took %"PRIu32" ms", (uint32_t)((esp_timer_get_time() - start) / 1000));
