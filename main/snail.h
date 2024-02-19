@@ -26,7 +26,6 @@ typedef enum {
 struct snail_state {
   peer_status status;
   EventGroupHandle_t event_group;
-  pico_repo_t repo;
 };
 
 const char* status_str(peer_status s);

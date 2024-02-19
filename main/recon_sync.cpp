@@ -168,36 +168,13 @@ pwire_handlers_t *recon_init_io(pico_repo_t *block_repository) {
   int i = 0;
   while (!repo->next(repo, &iter)) {
     storage.insert(iter.meta_stored_at, std::string_view((const char*)iter.meta_hash, 32));
+    int bsize = pf_block_body_size(iter.block);
+    char *txt = (char*)calloc(1, bsize + 1);
+    memcpy(txt, pf_block_body(iter.block), bsize);
+    ESP_LOGI(TAG, "Slot%i: body: %s", i, txt);
+    free(txt);
     ++i;
   };
   ESP_LOGI(TAG, "Done! %i blocks discovered", i);
   return &wire_io;
 }
-
-/* I went too deep
-struct RepoWrapper : negentropy::StorageBase {
-  uint64_t size() {
-    int i = 0;
-    pr_iterator_t iter{};
-    while (!repo->next(repo, &iter)) i++;
-    return i;
-  }
-
-  const negentropy::Item &getItem(size_t i) {
-    const auto item = negentropy::Item();
-    return item;
-  }
-
-  void iterate(size_t begin, size_t end, std::function<bool(const negentropy::Item &, size_t)> cb) {
-
-  }
-
-  size_t findLowerBound(size_t begin, size_t end, const negentropy::Bound &value) {
-
-  }
-
-  negentropy::Fingerprint fingerprint(size_t begin, size_t end) {
-
-  }
-};*/
-

@@ -8,11 +8,14 @@
 #include "monocypher.h"
 #define ESP_PARTITION_SUBTYPE_DATA_PiC0 87
 #define ESP_PARTITION_LABEL_PiC0 "PiC0"
-#define SLOT_SIZE 2048
-// 2 Mega Bytes
-#define MEM_SIZE (SLOT_SIZE * 1024)
+
 #define SLOT_GLYPH 0b10110001
 // #define FLAG_TOMB (1 << 1)
+
+/* TODO: use values from partition info instead */
+#define SLOT_SIZE 4096
+#define MEM_SIZE (0x200000)
+#define SLOT_OFFSET(s) ((((s) * SLOT_SIZE)) % MEM_SIZE)
 
 static const char TAG[] = "repo.c";
 struct pr_internal {
@@ -36,10 +39,9 @@ typedef struct {
   pf_block_t block; /* start of block */
 } flash_slot_t;
 
-#define SLOT2ADDR(s) ((((s) * SLOT_SIZE)) % MEM_SIZE)
 
 static flash_slot_t *prf_get_slot (const pico_repo_t *repo, uint16_t idx) {
-  return (flash_slot_t*) repo->_state->mmap_ptr + SLOT2ADDR(idx);
+  return (flash_slot_t*) repo->_state->mmap_ptr + SLOT_OFFSET(idx);
 }
 
 /**
@@ -50,7 +52,7 @@ static int next_slot(const pico_repo_t *repo, pr_iterator_t *iter) {
   const void *flash = repo->_state->mmap_ptr;
   iter->block = NULL;
   int first_run = !iter->offset;
-  uint32_t vaddr = SLOT2ADDR(iter->start + iter->offset++);
+  uint32_t vaddr = SLOT_OFFSET(iter->start + iter->offset++);
   if (!first_run && vaddr == iter->start * SLOT_SIZE) return 1; /* Wrap around completed */
   const flash_slot_t *slot = flash + vaddr;
   if (slot->glyph != SLOT_GLYPH) return -1; /* End of memory reached */
@@ -95,7 +97,7 @@ static int find_empty_slot (const pico_repo_t *repo) {
   }
   ESP_LOGI(TAG, "find_empty_slot(search exit: %i), decayed: %i, oldest: %i", exit, most_decayed_idx, oldest_block);
   /* empty space found */
-  if (exit == -1) return iter.start + iter.offset;
+  if (exit == -1) return iter.start + iter.offset - 1;
   /* overwrite first most expired block*/
   if (most_decayed_idx != -1) return iter.start + most_decayed_idx;
   /* overwrite active block by age */
@@ -105,11 +107,11 @@ static int find_empty_slot (const pico_repo_t *repo) {
 static pr_error_t prf_write_block(const pico_repo_t *repo, const uint8_t *block_bytes, uint8_t hops) {
   pf_block_t *block = (pf_block_t*)block_bytes;
   if (CANONICAL != pf_typeof(block)) return PR_ERROR_UNSUPPORTED_BLOCK_TYPE;
-  if (!pf_verify_block(block, block->net.author)) return PR_ERROR_INVALID_BLOCK;
+  if (0 != pf_verify_block(block, block->net.author)) return PR_ERROR_INVALID_BLOCK;
   const size_t block_size = pf_sizeof(block);
   if (block_size + sizeof(flash_slot_t) > SLOT_SIZE) return PR_ERROR_BLOCK_TOO_LARGE; // Not 100% accurate, block-struct is counted twice.
   ESP_LOGI(TAG, "write_block() size: %zu", block_size);
-  flash_slot_t *slot = malloc(SLOT_SIZE);
+  flash_slot_t *slot = calloc(1, SLOT_SIZE);
   slot->glyph = SLOT_GLYPH;
   slot->stored_at = time(NULL); // TODO: format is wrong
   slot->hops = hops;
@@ -120,14 +122,19 @@ static pr_error_t prf_write_block(const pico_repo_t *repo, const uint8_t *block_
   memcpy(&slot->block, block_bytes, block_size);
 
   int slot_idx = find_empty_slot(repo);
+  ESP_LOGI(TAG, "Writing to slot %i", slot_idx);
   flash_slot_t *dst_slot = prf_get_slot(repo, slot_idx);
   if (dst_slot->glyph != UINT8_MAX) {
-    ESP_ERROR_CHECK(esp_partition_erase_range(repo->_state->partition, SLOT2ADDR(slot_idx), SLOT_SIZE));
+    ESP_LOGI(TAG, "erazing slot%i: %zu, +%i", slot_idx, (size_t)SLOT_OFFSET(slot_idx), SLOT_SIZE);
+    ESP_ERROR_CHECK(esp_partition_erase_range(repo->_state->partition, SLOT_OFFSET(slot_idx), SLOT_SIZE));
     /* Ensure we've erased the mmapped region */
     if (true) for (uint16_t i = 0; i < SLOT_SIZE; i++) assert(((uint8_t*)dst_slot)[i] == 0xff);
     else assert(dst_slot->glyph == UINT8_MAX); /* checking glyph should be sufficient */
-  }
-  memcpy(dst_slot, slot, SLOT_SIZE); // write flash
+  } else ESP_LOGI(TAG, "Slot seems empty, skipping erase");
+  esp_partition_write(repo->_state->partition, SLOT_OFFSET(slot_idx), slot, SLOT_SIZE);
+  ESP_LOGI(TAG, "Block flashed @0x%x", SLOT_OFFSET(slot_idx));
+  // ESP_LOGI(TAG, "Flashing via mmap: %p, slot ptr: %p", repo->_state->mmap_ptr, dst_slot);
+  // memcpy(dst_slot, slot, SLOT_SIZE); // write flash
   free(slot);
   return slot_idx;
 }
@@ -145,6 +152,16 @@ int pr_init(pico_repo_t *repo) {
       ESP_PARTITION_LABEL_PiC0
     );
     return -1;
+  } else {
+    ESP_LOGI(TAG, "Partition Found: %s, type: %i, sub: %i, size: %"PRIu32" @%"PRIu32", erz: %"PRIu32" enc: %i",
+	part->label,
+	part->type,
+	part->subtype,
+	part->size,
+	part->address,
+	part->erase_size,
+	part->encrypted
+    );
   }
   repo->_state = calloc(1, sizeof(pr_internal));
   repo->_state->partition = part;

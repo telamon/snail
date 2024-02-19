@@ -11,6 +11,7 @@
 #include "recon_sync.h"
 
 static struct snail_state state = {0};
+static pico_repo_t repo;
 
 #define TAG "snail.c"
 #define BTN GPIO_NUM_39
@@ -107,16 +108,36 @@ void display_state (struct snail_state* state) {
 #endif
 
 void init_POP01(void) {
+  pr_iterator_t iter;
+  int n_blocks = 0;
+  while (!repo.next(&repo, &iter)) {
+    int bsize = pf_block_body_size(iter.block);
+    char *txt = calloc(1, bsize + 1);
+    memcpy(txt, pf_block_body(iter.block), bsize);
+    ESP_LOGI(TAG, "Slot%i: body: %s", n_blocks, txt);
+    free(txt);
+    n_blocks++;
+  }
+  ESP_LOGI(TAG, "init_POP01, %i blocks exist", n_blocks);
+  if (n_blocks > 0) return; // Skip past initial block
+
+
   /* Does it run?; TODO: call after wifi init */
   pico_keypair_t pair = {0};
   pico_crypto_keypair(&pair);
   char pkstr[64];
   for (int i = 0; i < 32; i++) sprintf(pkstr+i*2, "%02x", pair.pk[i]);
   ESP_LOGI(TAG, "secret initialized:\n %s",pkstr);
-  char msg[] = "Let S.N.A.I.L terraform the infospheres";
+  char msg[] = "Hello neighbourhood";
   pico_feed_t feed = {0};
   pf_init(&feed);
+
   pf_append(&feed, (uint8_t*)msg, strlen(msg), pair);
+  int res = repo.write_block(&repo, (const uint8_t*)pf_get(&feed, 0), 0);
+  ESP_LOGI(TAG, "repo_write_block exit: %i", res);
+  assert(res >= 0);
+
+  pf_deinit(&feed);
 }
 
 /* The main task drives optional UI
@@ -129,9 +150,9 @@ void app_main(void) {
   init_display();
 
   display_state(&state);
+  pr_init(&repo);
   init_POP01();
-  pr_init(&state.repo);
-  pwire_handlers_t *wire_io = recon_init_io(&state.repo);
+  pwire_handlers_t *wire_io = recon_init_io(&repo);
 #ifdef PROTO_NAN
   nanr_discovery_start(); /* desired but broken */
 #endif
