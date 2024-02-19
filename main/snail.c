@@ -115,35 +115,30 @@ void init_POP01(void) {
   ESP_LOGI(TAG, "secret initialized:\n %s",pkstr);
   char msg[] = "Let S.N.A.I.L terraform the infospheres";
   pico_feed_t feed = {0};
-  pico_feed_init(&feed);
-  pico_feed_append(&feed, (uint8_t*)msg, strlen(msg), pair);
+  pf_init(&feed);
+  pf_append(&feed, (uint8_t*)msg, strlen(msg), pair);
 }
 
 /* The main task drives optional UI
  * and wifi NAN discovery.
  */
 void app_main(void) {
-  /* Initialization code */
+  /* Initialization */
+  uint64_t start = esp_timer_get_time();
   ESP_LOGI(TAG, "snail.c main()");
   init_display();
 
   display_state(&state);
-  /*storage_init();*/
-  /*storage_deinit();*/
-  pwire_handlers_t *wire_io = recon_init_io();
+  init_POP01();
+  pr_init(&state.repo);
+  pwire_handlers_t *wire_io = recon_init_io(&state.repo);
 #ifdef PROTO_NAN
-  nanr_discovery_start();
-#endif
-  /* SoftAP Swapping */
-#ifdef PROTO_SWAP
-  uint64_t start = esp_timer_get_time();
-  swap_init(wire_io);
-  uint32_t delta = (esp_timer_get_time() - start) / 1000;
-  ESP_LOGI(TAG, "Swap init + seek %"PRIu32" ms", delta);
-  // state.status = SEEK;
+  nanr_discovery_start(); /* desired but broken */
 #endif
 
-  init_POP01();
+#ifdef PROTO_SWAP
+  swap_init(wire_io);
+#endif
 
   /* Hookup button */
   ESP_ERROR_CHECK(gpio_set_direction(BTN, GPIO_MODE_INPUT));
@@ -151,6 +146,8 @@ void app_main(void) {
   int hold = gpio_get_level(BTN);
   TickType_t pressedAt = 000000000;
   TickType_t mode_start = xTaskGetTickCount();
+
+  ESP_LOGI(TAG, "System ready, higher init took %"PRIu32" ms", (uint32_t)((esp_timer_get_time() - start) / 1000));
   while (1) {
     int b = gpio_get_level(BTN); // TODO: attempt interrupts
     if (hold != b) {

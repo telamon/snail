@@ -104,10 +104,11 @@ static int find_empty_slot (const pico_repo_t *repo) {
 
 static pr_error_t prf_write_block(const pico_repo_t *repo, const uint8_t *block_bytes, uint8_t hops) {
   pf_block_t *block = (pf_block_t*)block_bytes;
-  if (CANONICAL != pf_typeof(block_bytes)) return PR_ERROR_UNSUPPORTED_BLOCK_TYPE;
+  if (CANONICAL != pf_typeof(block)) return PR_ERROR_UNSUPPORTED_BLOCK_TYPE;
   if (!pf_verify_block(block, block->net.author)) return PR_ERROR_INVALID_BLOCK;
   const size_t block_size = pf_sizeof(block);
-  if (block_size + sizeof(flash_slot_t)) return PR_ERROR_BLOCK_TOO_LARGE; // Not 100% accurate, block-struct is counted twice.
+  if (block_size + sizeof(flash_slot_t) > SLOT_SIZE) return PR_ERROR_BLOCK_TOO_LARGE; // Not 100% accurate, block-struct is counted twice.
+  ESP_LOGI(TAG, "write_block() size: %zu", block_size);
   flash_slot_t *slot = malloc(SLOT_SIZE);
   slot->glyph = SLOT_GLYPH;
   slot->stored_at = time(NULL); // TODO: format is wrong
@@ -122,7 +123,7 @@ static pr_error_t prf_write_block(const pico_repo_t *repo, const uint8_t *block_
   flash_slot_t *dst_slot = prf_get_slot(repo, slot_idx);
   if (dst_slot->glyph != UINT8_MAX) {
     ESP_ERROR_CHECK(esp_partition_erase_range(repo->_state->partition, SLOT2ADDR(slot_idx), SLOT_SIZE));
-    /* Ensure we erased the mmapped region */
+    /* Ensure we've erased the mmapped region */
     if (true) for (uint16_t i = 0; i < SLOT_SIZE; i++) assert(((uint8_t*)dst_slot)[i] == 0xff);
     else assert(dst_slot->glyph == UINT8_MAX); /* checking glyph should be sufficient */
   }

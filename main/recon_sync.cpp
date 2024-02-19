@@ -1,7 +1,7 @@
 #include "recon_sync.h"
 #include "negentropy.h"
 #include "negentropy/types.h"
-#include "negentropy/storage/Vector.h"
+#include "negentropy/storage/BTreeMem.h"
 #include "esp_log.h"
 #include "sha-256.h" // <-- use Blake2b from Monocypher instead?
 #include "esp_random.h"
@@ -26,8 +26,7 @@
 static const char* TAG = "recon";
 static uint8_t *buffer = NULL;
 
-static auto storage = negentropy::storage::Vector();
-static negentropy::Negentropy<negentropy::storage::Vector> *ne = NULL;
+static pico_repo_t *repo;
 
 enum MSG_TYPES {
   T_OK = 0,
@@ -35,6 +34,8 @@ enum MSG_TYPES {
   T_BLOCK,
   T_BLOCK_REQ
 };
+static auto storage = negentropy::storage::BTreeMem(); /* One global index */
+static negentropy::Negentropy<negentropy::storage::BTreeMem> *ne = NULL;
 
 static pwire_ret_t recon_onopen(pwire_event_t *ev) {
   ESP_LOGI(TAG, "pwire_onopen initiator: %i", ev->initiator);
@@ -45,7 +46,7 @@ static pwire_ret_t recon_onopen(pwire_event_t *ev) {
   /* Initialize link-state */
   buffer = (uint8_t*)calloc(1, 4098);
 
-  ne = new Negentropy<negentropy::storage::Vector>(storage, 4096);
+  ne = new Negentropy<negentropy::storage::BTreeMem>(storage, 4096);
   if (ev->initiator) {
     std::string msg = ne->initiate();
     ESP_LOGI(TAG, "ngn_init() first msg size: %zu", msg.length());
@@ -75,19 +76,21 @@ static pwire_ret_t recon_ondata(pwire_event_t *ev) {
 	  // assert(need.empty();
 	  return PW_CLOSE;
 	}
-      case T_OK:
-
+	return PW_CLOSE;
+      };
+      case T_OK: {
 	if (!have.empty()) {
 	  auto& hash = have.back();
 	  ESP_LOGI(TAG, "HAVE --> " HASHSTR, HASH2STR(hash.data()));
 	  buffer[0] = T_BLOCK;
-	  int n = pico_repo.read_block(buffer + 1, (uint8_t*)hash.data());
-	  if (n < 0) {
-	    ESP_LOGE(TAG, "read_block failed! (%i)", n);
-	    return PW_CLOSE;
-	  }
+
+	  //int n = pico_repo.read_block(buffer + 1, (uint8_t*)hash.data());
+	  //if (n < 0) {
+	    //ESP_LOGE(TAG, "read_block failed! (%i)", n);
+	    //return PW_CLOSE;
+	  //}
 	  have.pop_back();
-	  ev->size = ID_SIZE + n;
+	  ev->size = ID_SIZE + 1;  // n;
 	  ev->message = buffer;
 	}
 
@@ -109,6 +112,11 @@ static pwire_ret_t recon_ondata(pwire_event_t *ev) {
 	ev->size = reply->length() + 1;
 	return PW_REPLY;
       }
+
+      default: {
+	ESP_LOGW(TAG, "initiator message type not implemented: %i", type);
+	return PW_CLOSE;
+      }
     }
   } else {
     switch (type) {
@@ -125,6 +133,10 @@ static pwire_ret_t recon_ondata(pwire_event_t *ev) {
 	ev->message = buffer;
 	ev->size = reply.length() + 1;
 	return PW_REPLY;
+      }
+      default: {
+	ESP_LOGW(TAG, "reciever message type not implemented: %i", type);
+	return PW_CLOSE;
       }
     }
   }
@@ -148,46 +160,32 @@ pwire_handlers_t wire_io = {
   .on_close = recon_onclose
 };
 
-static void init_dummy_store(bool initiator) {
-  uint8_t hash[16][32];
-  for (int i = 0; i < 16; i++) {
-    char v[12];
-    if (i < 10) {
-      sprintf(v, "id:%i", i);
-    } else {
-      uint32_t r = esp_random();
-      sprintf(v, "id:%i", (int)(r & 0xfff));
-    }
-    calc_sha_256(hash[i], v, 12);
-    std::string_view hview(reinterpret_cast<const char*>(hash[i]), 32);
-    if (
-        i < 2 ||
-        i >= 10 ||
-        (initiator && (i % 2)) ||
-        (!initiator && !(i % 2))
-       ) storage.insert(i, hview);
-    ESP_LOGI(TAG, "Block spawned %i " HASHSTR, i, HASH2STR(hash[i]));
-
-  }
-  // for (const auto &item : myItems) {
-  //   storage.insert(timestamp, id);
-  // }
-  storage.seal();
-}
-
-pwire_handlers_t *recon_init_io(void) {
-  init_dummy_store(true); // TODO: require param store ptr
+pwire_handlers_t *recon_init_io(pico_repo_t *block_repository) {
+  repo = block_repository;
+  /* Build in-mem index of all blocks on boot */
+  ESP_LOGI(TAG, "Indexing block repo...");
+  pr_iterator_t iter{};
+  int i = 0;
+  while (!repo->next(repo, &iter)) {
+    storage.insert(iter.meta_stored_at, std::string_view((const char*)iter.meta_hash, 32));
+    ++i;
+  };
+  ESP_LOGI(TAG, "Done! %i blocks discovered", i);
   return &wire_io;
 }
 
-
+/* I went too deep
 struct RepoWrapper : negentropy::StorageBase {
   uint64_t size() {
-    return 0;
+    int i = 0;
+    pr_iterator_t iter{};
+    while (!repo->next(repo, &iter)) i++;
+    return i;
   }
 
   const negentropy::Item &getItem(size_t i) {
-
+    const auto item = negentropy::Item();
+    return item;
   }
 
   void iterate(size_t begin, size_t end, std::function<bool(const negentropy::Item &, size_t)> cb) {
@@ -201,4 +199,5 @@ struct RepoWrapper : negentropy::StorageBase {
   negentropy::Fingerprint fingerprint(size_t begin, size_t end) {
 
   }
-};
+};*/
+

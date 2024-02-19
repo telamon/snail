@@ -3,4 +3,4 @@
 nvs,data,nvs,0x9000,24K,
 phy_init,data,phy,0xf000,4K,
 factory,app,factory,0x10000,1M,
-lfs,data,lsf,TBD
+PiC0,data,87,0x200000,2M,

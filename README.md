@@ -60,6 +60,13 @@ Setup [esp-idf](https://github.com/espressif/esp-idf#developing-with-esp-idf) th
 ```
 idf.py build && idf.py flash
 ```
+## Device Config
+
+See snail section in:
+
+```
+LC_ALL=en_US.UTF8 idf.py menuconfig
+```
 
 ## Design
 Sneakernet is the art of transferring data using physical transportation and without the use of internet.
