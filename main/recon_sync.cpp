@@ -143,12 +143,15 @@ static pwire_ret_t initiator_ondata(pwire_event_t *ev) {
   /* Prepare outgoing data */
   if (have.empty() && need.empty()) {
     /* We're in sync, and have/need should be satisfied, bye! */
-    if (!reply.has_value()) return PW_CLOSE;
-
+    if (!reply.has_value()) {
+      ESP_LOGI(TAG, "All empty, no reply, recon exit.");
+      return PW_CLOSE;
+    }
     /* ask for more if we're empty */
     std::string msg = reply.value();
+    ESP_LOGI(TAG, "Recon continues %zu", msg.size());
     buffer[0] = T_RECONCILE;
-    memcpy(buffer + 1, msg.data(), msg.length());
+    memcpy(buffer + 1, msg.data(), msg.size());
     ev->message = buffer;
     ev->size = msg.length() + 1;
     return PW_REPLY;
@@ -250,7 +253,7 @@ pwire_handlers_t *recon_init_io() {
     int bsize = pf_block_body_size(iter.block);
     char *txt = (char*)calloc(1, bsize + 1);
     memcpy(txt, pf_block_body(iter.block), bsize);
-    ESP_LOGI(TAG, "Slot%i: body: %s", i, txt);
+    ESP_LOGI(TAG, "Slot%i: body: %s, "HASHSTR, i, txt, HASH2STR(iter.meta.hash));
     free(txt);
     ++i;
   };
