@@ -11,7 +11,6 @@
 #include "recon_sync.h"
 
 static struct snail_state state = {0};
-static pico_repo_t repo;
 
 #define TAG "snail.c"
 #define BTN GPIO_NUM_39
@@ -108,9 +107,9 @@ void display_state (struct snail_state* state) {
 #endif
 
 void init_POP01(void) {
-  pr_iterator_t iter;
+  pr_iterator_t iter = {0};
   int n_blocks = 0;
-  while (!pr_next_slot(&repo, &iter)) {
+  while (!pr_iter_next(&iter)) {
     int bsize = pf_block_body_size(iter.block);
     char *txt = calloc(1, bsize + 1);
     memcpy(txt, pf_block_body(iter.block), bsize);
@@ -118,6 +117,7 @@ void init_POP01(void) {
     free(txt);
     n_blocks++;
   }
+  pr_iter_deinit(&iter);
   ESP_LOGI(TAG, "init_POP01, %i blocks exist", n_blocks);
   if (n_blocks > 0) return; // Skip past initial block
 
@@ -134,7 +134,7 @@ void init_POP01(void) {
     pico_feed_t feed = {0};
     pf_init(&feed);
     pf_append(&feed, (uint8_t*)msg, strlen(msg), pair);
-    int res = pr_write_block(&repo, (const uint8_t*)pf_get(&feed, 0), 0);
+    int res = pr_write_block((const uint8_t*)pf_get(&feed, 0), 0);
     ESP_LOGI(TAG, "repo_write_block exit: %i", res);
     assert(res >= 0);
     pf_deinit(&feed);
@@ -151,9 +151,9 @@ void app_main(void) {
   init_display();
 
   display_state(&state);
-  pr_init(&repo);
+  pr_init();
   init_POP01();
-  pwire_handlers_t *wire_io = recon_init_io(&repo);
+  pwire_handlers_t *wire_io = recon_init_io();
 #ifdef PROTO_NAN
   nanr_discovery_start(); /* desired but broken */
 #endif
@@ -177,7 +177,11 @@ void app_main(void) {
       else {
         uint16_t holdTime = xTaskGetTickCount() - pressedAt;
         // Long Press
-        if (holdTime > 200) {
+        if (holdTime > 1000) {
+	  ESP_LOGI(TAG, "Purging flash");
+	  pr_purge_flash();
+	  ESP_LOGI(TAG, "Restarting...");
+	  abort();
 #ifdef PROTO_NAN
           nanr_unpublish();
           nanr_unsubscribe();

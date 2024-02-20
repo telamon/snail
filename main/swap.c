@@ -97,7 +97,7 @@ static int peer_select_num (uint16_t *i) {
   int best_rssi = -100;
   int best_idx = -1;
   time_t now = time(NULL);
-  ESP_LOGE(TAG, "======= [PEERS] ========");
+  // ESP_LOGE(TAG, "======= [PEERS] ========");
   for (; *i < N_PEERS; ++*i) {
     struct peer_info *peer = &state.peers[*i];
     int is_empty = 1;
@@ -322,14 +322,15 @@ static int swap_seek_scan(void) {
   /* Process APs (5.1.2-style) */
   n_accesspoints = MAX_SCAN;
   ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&n_accesspoints, records));
+  /*
   for (int i = 0; i < n_accesspoints; i++) {
-    /* TODO: write to journey.log */
+    // TODO: write to journey.log 
     ESP_LOGI(TAG, "AP [%i] auth: %i, ssid: %s",
         records[i].rssi,
         records[i].authmode,
         records[i].ssid
     );
-  }
+  }*/
   ESP_ERROR_CHECK(esp_wifi_clear_ap_list());
   return selected_peer;
 }

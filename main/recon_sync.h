@@ -6,7 +6,7 @@ extern "C" {
 #include "pwire.h"
 #include "repo.h"
 
-pwire_handlers_t *recon_init_io(pico_repo_t *repo);
+pwire_handlers_t *recon_init_io();
 
 #ifdef __cplusplus
 }
