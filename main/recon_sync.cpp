@@ -77,6 +77,11 @@ static int accept_incoming_block(const pwire_event_t *ev) {
 
   uint16_t expected_block_size = ev->size - sizeof(struct exchange_packet);
   pf_block_t *block = (pf_block_t*)x->block_bytes;
+  pf_block_type_t btype = pf_typeof(block);
+  if (btype != CANONICAL) {
+    ESP_LOGE(TAG, "Unsupported block type %i", btype);
+    return -1;
+  }
   uint16_t block_size = pf_sizeof(block);
   if (expected_block_size != block_size) {
     ESP_LOGE(TAG, "Invalid block received, expected: %i, got: %i", expected_block_size, block_size);
