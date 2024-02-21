@@ -197,13 +197,17 @@ static esp_err_t frame_handler(httpd_req_t *req) {
         free(buf);
         return err;
     }
-    pwire_event_t ev = {
+    pwire_event_t event = {
       .initiator = 0,
       .message = buf,
       .size = ws_pkt.len,
     };
-    pwire_ret_t rep = handlers.on_data(&ev);
+    pwire_ret_t rep = handlers.on_data(&event);
     if (rep == PW_REPLY) {
+      assert(event.message != NULL);
+      assert(event.size != 0);
+      ws_pkt.payload = event.message;
+      ws_pkt.len = event.size;
       err = httpd_ws_send_frame(req, &ws_pkt);
       free(buf);
       if (err != ESP_OK) {
