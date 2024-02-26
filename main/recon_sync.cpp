@@ -5,6 +5,8 @@
 #include "picofeed.h"
 #include "pwire.h"
 #include "string.h"
+#include "snail.h"
+#include "time.h"
 #include "monocypher.h"
 #include <assert.h>
 #include <cstdint>
@@ -80,6 +82,7 @@ static int accept_incoming_block(const pwire_event_t *ev) {
   pf_block_type_t btype = pf_typeof(block);
   if (btype != CANONICAL) {
     ESP_LOGE(TAG, "Unsupported block type %i", btype);
+    ESP_LOG_BUFFER_HEXDUMP(TAG, block, 250, ESP_LOG_WARN);
     return -1;
   }
   uint16_t block_size = pf_sizeof(block);
@@ -93,7 +96,7 @@ static int accept_incoming_block(const pwire_event_t *ev) {
     ESP_LOGE(TAG, "Failed to store block, error: %i", slot_id);
     return -1;
   }
-  // Unecessary rehash - block is hashed already by prepo
+  // Unecessary rehash - block is hashed already by p_repo
   uint8_t hash[32];
   crypto_blake2b(hash, 32, x->block_bytes, block_size);
   // Update index
@@ -177,10 +180,10 @@ static pwire_ret_t initiator_ondata(pwire_event_t *ev) {
 
   int block_size = 0;
   if (!have.empty()) {
-    auto& hash = need.back();
+    auto& hash = have.back();
     ESP_LOGI(TAG, "HAVE --> " HASHSTR, HASH2STR(hash.data()));
     block_size = resolve_requested_block(x, (const uint8_t*)hash.data());
-    need.pop_back();
+    have.pop_back();
   }
 
   ev->size = sizeof(struct exchange_packet) + block_size;
@@ -252,9 +255,13 @@ pwire_handlers_t *recon_init_io() {
   ESP_LOGI(TAG, "Indexing block repo...");
   pr_iterator_t iter{};
   int i = 0;
+  uint64_t latest_block_time = 0;
   while (!pr_iter_next(&iter)) {
     if (iter.meta.hops >= PR_MAX_HOPS) continue;
-    storage.insert(pf_read_utc(iter.block->net.date), std::string_view((const char*)iter.meta.hash, 32));
+    uint64_t btime = pf_read_utc(iter.block->net.date);
+    storage.insert(btime, std::string_view((const char*)iter.meta.hash, 32));
+    if (latest_block_time < btime) latest_block_time = btime;
+    // ---
     int bsize = pf_block_body_size(iter.block);
     char *txt = (char*)calloc(1, bsize + 1);
     memcpy(txt, pf_block_body(iter.block), bsize);
@@ -262,7 +269,9 @@ pwire_handlers_t *recon_init_io() {
     free(txt);
     ++i;
   };
-  ESP_LOGI(TAG, "Done! %i blocks discovered", i);
+  bump_time(latest_block_time);
+
+  ESP_LOGI(TAG, "Done! %i blocks discovered, current_time: %"PRIu64, i, time(NULL));
   pr_iter_deinit(&iter);
   return &wire_io;
 }

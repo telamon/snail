@@ -9,6 +9,7 @@
 #include "picofeed.h"
 #include "string.h"
 #include "recon_sync.h"
+#include "sys/time.h"
 
 static struct snail_state state = {0};
 
@@ -295,4 +296,14 @@ int validate_transition(peer_status from, peer_status to) {
       }
     default: return -1;
   }
+}
+
+void bump_time(uint64_t utc_millis) {
+  // TODO: if utc_millis < current system time then return;
+  struct timeval tv;
+  tv.tv_sec = utc_millis / 1000;
+  tv.tv_sec = (utc_millis % 1000) * 100;
+  int err = settimeofday(&tv, NULL);
+  if (err < 0) ESP_LOGE(TAG, "bump_time: Error %i", err);
+  ESP_LOGI(TAG, "System-time bumped to: %"PRIu64, utc_millis);
 }

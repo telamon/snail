@@ -76,6 +76,7 @@ int pr_iter_next(pr_iterator_t *iter) {
   return 0;
 }
 
+/* To be removed when mmap works. */
 void pr_iter_deinit(pr_iterator_t *iter) {
   free(iter->_tmp);
   memset(iter, 0, sizeof(pr_iterator_t));
@@ -208,4 +209,13 @@ void pr_deinit() {
   */
   /* free internal state */
   // free(repo->_state);
+}
+
+int pr_find_by_hash(pr_iterator_t *iter, uint8_t *hash) {
+  int i = 0;
+  while (!pr_iter_next(iter)) {
+    if (0 == memcmp(iter->meta.hash, hash, 32)) return i;
+    i++;
+  }
+  return -1;
 }

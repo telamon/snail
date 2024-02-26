@@ -1,5 +1,9 @@
 #ifndef SNAIL_H
 #define SNAIL_H
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "repo.h"
@@ -26,6 +30,7 @@ typedef enum {
 struct snail_state {
   peer_status status;
   EventGroupHandle_t event_group;
+  // uint64_t block_time;
 };
 
 const char* status_str(peer_status s);
@@ -35,4 +40,10 @@ void snail_inform_complete(const int exit_code);
 int validate_transition(peer_status from, peer_status to);
 int snail_transition_valid(peer_status to);
 void swap_polarity();
+
+void bump_time(uint64_t utc_millis);
+
+#ifdef __cplusplus
+}
+#endif
 #endif

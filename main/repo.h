@@ -63,6 +63,16 @@ int pr_write_block (const uint8_t *block_bytes, uint8_t n_hops);
 
 int read_block_size (uint8_t id[32]);
 int read_block (pico_signature_t id);
+
+/**
+ * Deletes everything
+ */
 void pr_purge_flash();
 
+/**
+ * @brief Stops iterator when hash found
+ * @param iter Needs to be deinit() when done.
+ * @param hash 32 bytes Blake2b
+ */
+int pr_find_by_hash(pr_iterator_t *iter, uint8_t *hash);
 #endif
