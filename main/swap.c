@@ -177,7 +177,18 @@ static void update_ap_beacons (void) {
   hdr->length = 36; // after elem + length; remain OUI(3) + type (1) + Payload(32) = 36
   memcpy(hdr->vendor_oui, OUI, 3);
   hdr->vendor_oui_type = 0;
-  memset(hdr->payload, 0xff, 32); // TODO: blockheight/hash
+  memset(hdr->payload, 0xff, 32);
+  uint64_t *i = (uint64_t*)hdr->payload;
+  *i = snail_current_pop8() & UINT40_MASK; /* POP-08: 5 byte 1/100th 2020 timestamp */
+
+  // TODO: append assumed node geolocation from interpolation of blocks.
+  // Assuming that each blocks travels at the speed of 4 metres / hour,
+  // using our assumed system-clock time, we can calculate the node's distance to the blocks birthplace.
+  // By triangulating the freshest ~5 blocks we can get a pseudo correct geo-position.
+  // Voilá, we have not only created a fully decentralized clock that does not rely on NTP
+  // But we have also devised a fully decentralized civillian-owned geo positioning system for indoor&street usage.
+  // Don't expect any crazy accuracy, this is an alpha-proto-grade a.k.a half-baked idea.
+
   esp_wifi_set_vendor_ie(true, WIFI_VND_IE_TYPE_BEACON, 0, &ie_data);
   // esp_wifi_80211_tx(WIFI_IF_AP, &buffer, length, true); // ulitmate fallback raw frames.
 }

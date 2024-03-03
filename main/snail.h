@@ -30,7 +30,7 @@ typedef enum {
 struct snail_state {
   peer_status status;
   EventGroupHandle_t event_group;
-  // uint64_t block_time;
+  uint64_t pop8_block_time;
 };
 
 const char* status_str(peer_status s);
@@ -42,7 +42,7 @@ int snail_transition_valid(peer_status to);
 void swap_polarity();
 
 void bump_time(uint64_t utc_millis);
-
+uint64_t snail_current_pop8(void);
 #ifdef __cplusplus
 }
 #endif

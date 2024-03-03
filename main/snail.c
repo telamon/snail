@@ -299,11 +299,19 @@ int validate_transition(peer_status from, peer_status to) {
 }
 
 void bump_time(uint64_t utc_millis) {
-  // TODO: if utc_millis < current system time then return;
+  uint64_t pop8 = pf_utc_to_pop8(utc_millis);
+  if (pop8 < state.pop8_block_time) return;
+  state.pop8_block_time = pop8;
+
+  /* Alternative; bumb systemclock */
   struct timeval tv;
   tv.tv_sec = utc_millis / 1000;
   tv.tv_sec = (utc_millis % 1000) * 100;
   int err = settimeofday(&tv, NULL);
   if (err < 0) ESP_LOGE(TAG, "bump_time: Error %i", err);
   ESP_LOGI(TAG, "System-time bumped to: %"PRIu64, utc_millis);
+}
+
+uint64_t snail_current_pop8(void) {
+  return state.pop8_block_time;
 }

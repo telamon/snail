@@ -127,4 +127,4 @@ bc1qqjgz9fqqxj7kndqelecxmdtqgvtzqrukma5599
 
 ## License
 
-Apache-2.0 © Decent Labs 2024
+Apache-2.0 © Decent Labs 2024 | AGPL
