@@ -31,7 +31,7 @@ struct peer_info {
   uint16_t seen; // Last seen in ticks?
   uint32_t synced;
   int sync_result;
-  uint32_t clock; // Node.date = Last Block.date (decentralized swarm clock)
+  uint64_t pop8; // Node.date = Last Block.date (decentralized swarm clock)
   uint8_t payload[32]; /* TODO: Redefine to something meaningful */
 };
 
@@ -97,6 +97,8 @@ static int peer_select_num (uint16_t *i) {
   int best_rssi = -100;
   int best_idx = -1;
   time_t now = time(NULL);
+  uint64_t pop8_now = snail_current_pop8();
+  ESP_LOGI(TAG, "peer_select_num() now: %"PRIu64", pop8_now: %"PRIu64, now, pop8_now);
   // ESP_LOGE(TAG, "======= [PEERS] ========");
   for (; *i < N_PEERS; ++*i) {
     struct peer_info *peer = &state.peers[*i];
@@ -106,16 +108,17 @@ static int peer_select_num (uint16_t *i) {
     if (is_empty) break;
     int seen = now - peer->seen;
     int synced = now - peer->synced;
-    ESP_LOGI(TAG, "peer%i: "MACSTR" RSSI: %i, Seen: %i, Synced: [%i] %"PRIu32, *i, MAC2STR(peer->bssid), peer->rssi, seen, peer->sync_result, peer->synced);
+    ESP_LOGI(TAG, "peer%i: "MACSTR" RSSI: %i, Seen: %i, Synced: [%i] %"PRIu32" pop8: %"PRIu64, *i, MAC2STR(peer->bssid), peer->rssi, seen, peer->sync_result, peer->synced, peer->pop8);
     if (peer->sync_result == 1 && synced < BACKOFF_TIME) continue;
     if (peer->sync_result == -1 && synced < BACKOFF_TIME / 3) continue;
+    if (peer->pop8 <= pop8_now) continue; /* is this valid? */
 
 
     // if (high_clock < peer->clock) update high_clock_idx + high_clock
     /* Update best criterion along the way */
     if (peer->rssi > best_rssi) best_idx = *i;
   }
-  ESP_LOGE(TAG, "SELECTED peer%i "MACSTR" RSSI: %i",
+  ESP_LOGE(TAG, "SELECTED peer %i "MACSTR" RSSI: %i",
     best_idx,
     MAC2STR(state.peers[best_idx].bssid),
     state.peers[best_idx].rssi);
@@ -162,6 +165,8 @@ static void vsie_callback (
 
   slot->rssi = rssi;
   slot->seen = time(NULL);
+  uint64_t *pop8_time = (uint64_t*)vnd_ie->payload;
+  slot->pop8 = *pop8_time & UINT40_MASK;
   // slot->clock = decode(vnd_ie->payload);
   // slot->id = decode(vnd_ie->payload);
   memcpy(slot->bssid, source_mac, 6);
